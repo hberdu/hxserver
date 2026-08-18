@@ -1,0 +1,22 @@
+{
+  "name": "hx-chat",
+  "version": "1.0.0",
+  "description": "Discord-like: servidores, chat, voz e compartilhamento de tela",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "tunnel": "tools\\cloudflared.exe tunnel --url http://localhost:3000"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

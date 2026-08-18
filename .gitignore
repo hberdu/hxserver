@@ -1,0 +1,4 @@
+node_modules/
+hx.db*
+tools/
+*.log
