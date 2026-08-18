@@ -18,7 +18,20 @@ Abra http://localhost:3000, crie uma conta (usuário + senha) e entre.
 - **Assistir**: quem transmite ganha o badge vermelho **AO VIVO** ao lado do nome no canal de voz. Clique no badge para ver a prévia (atualizada a cada 3s) e então **Assistir** — o vídeo só é enviado a quem assiste.
 - Outra pessoa na mesma rede: http://SEU_IP:3000 (mic/tela fora de localhost exigem HTTPS).
 
-## Publicar na web
+## Deploy permanente (Render — URL fixa hx-chat.onrender.com)
+
+1. Crie um repositório em https://github.com/new (ex: `hx-chat`, privado serve)
+2. No terminal do projeto:
+   ```
+   git remote add origin https://github.com/SEU_USUARIO/hx-chat.git
+   git push -u origin main
+   ```
+3. Em https://render.com: login com GitHub → **New → Blueprint** → escolha o repo → Apply (o [render.yaml](render.yaml) configura tudo)
+4. URL final: `https://hx-chat.onrender.com` (se o nome estiver ocupado, o Render sufixa)
+
+Limitações do plano grátis: a instância dorme após ~15min sem uso (primeiro acesso demora ~30s) e o disco é efêmero — `hx.db` zera a cada deploy/restart (contas precisam ser recriadas). Para persistir: disco pago do Render ou migrar contas para Postgres.
+
+## Publicar na web (túnel temporário)
 
 ```
 npm run tunnel
