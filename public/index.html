@@ -24,6 +24,12 @@
     <symbol id="i-expand" viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></symbol>
     <symbol id="i-shrink" viewBox="0 0 24 24"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></symbol>
     <symbol id="i-fullscreen" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-headset" viewBox="0 0 24 24"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><path d="M4 15a2 2 0 0 1 2-2h1v6H6a2 2 0 0 1-2-2zM20 15a2 2 0 0 0-2-2h-1v6h1a2 2 0 0 0 2-2z"/></symbol>
+    <symbol id="i-headset-off" viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M4 15v-3a8 8 0 0 1 12.5-6.6M20 13.5V12"/><path d="M4 15a2 2 0 0 1 2-2h1v6H6a2 2 0 0 1-2-2zM20 15v-1m-3 5h1a2 2 0 0 0 1.8-1.2"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
   </svg>
 
   <!-- Tela de login -->
@@ -60,7 +66,8 @@
         <ul id="voice-users" class="voice-users"></ul>
       </div>
       <div class="voice-controls hidden" id="voice-controls">
-        <button id="mute-btn" title="Mutar / Desmutar"><svg class="icon"><use id="mute-icon" href="#i-mic"/></svg></button>
+        <button id="mute-btn" title="Mutar / Desmutar microfone"><svg class="icon"><use id="mute-icon" href="#i-mic"/></svg></button>
+        <button id="deafen-btn" title="Silenciar / Ouvir o canal"><svg class="icon"><use id="deafen-icon" href="#i-headset"/></svg></button>
         <button id="screen-btn" title="Compartilhar tela ou aplicativo"><svg class="icon"><use href="#i-monitor"/></svg></button>
         <button id="leave-voice-btn" title="Desconectar da voz"><svg class="icon"><use href="#i-phone-off"/></svg></button>
       </div>
@@ -101,16 +108,49 @@
   <div id="profile-overlay" class="hidden">
     <div id="profile-card">
       <button id="profile-close" title="Fechar"><svg class="icon"><use href="#i-x"/></svg></button>
-      <div id="profile-title">Seu perfil</div>
-      <div id="profile-avatar-holder"></div>
+
+      <header class="profile-header">
+        <div id="profile-avatar-holder" title="Clique para trocar a foto">
+          <div class="avatar-overlay"><svg class="icon"><use href="#i-image"/></svg></div>
+        </div>
+        <div class="profile-id">
+          <div id="profile-display-name"></div>
+          <div class="profile-sub">Servidor HX</div>
+        </div>
+      </header>
+
       <input id="avatar-file" type="file" accept="image/*" hidden>
-      <button id="avatar-pick">Trocar foto de perfil</button>
-      <button id="avatar-remove" class="danger">Remover foto de perfil</button>
-      <div class="rename-row">
-        <input id="rename-input" type="text" maxlength="32" placeholder="Novo nome">
-        <button id="rename-save">Trocar nome</button>
-      </div>
+
+      <section class="profile-section">
+        <div class="section-label">Foto de perfil</div>
+        <div class="profile-actions">
+          <button id="avatar-pick" class="btn-primary"><svg class="icon"><use href="#i-image"/></svg> Trocar foto</button>
+          <button id="avatar-remove" class="btn-danger"><svg class="icon"><use href="#i-trash"/></svg> Remover</button>
+        </div>
+      </section>
+
+      <section class="profile-section">
+        <div class="section-label">Nome de exibição</div>
+        <div class="rename-row">
+          <input id="rename-input" type="text" maxlength="32" placeholder="Seu nome">
+          <button id="rename-save" class="btn-primary" title="Salvar nome"><svg class="icon"><use href="#i-check"/></svg></button>
+        </div>
+        <div class="section-hint">3 a 32 caracteres. Também é o nome usado para entrar.</div>
+      </section>
+
+      <section class="profile-section">
+        <div class="section-label">Áudio</div>
+        <label class="toggle-row">
+          <span>
+            Redução de ruído
+            <span class="section-hint">Filtra ventilador, teclado e eco do microfone.</span>
+          </span>
+          <input id="noise-toggle" type="checkbox" checked>
+        </label>
+      </section>
+
       <div id="profile-error" class="error"></div>
+      <div id="profile-ok" class="ok"></div>
     </div>
   </div>
 

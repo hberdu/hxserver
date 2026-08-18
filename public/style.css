@@ -28,8 +28,10 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .rail-icon.active::before { content: ''; position: absolute; left: -12px; width: 4px; height: 40px; background: #fff; border-radius: 0 4px 4px 0; }
 
 /* Avatares */
-.avatar { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; flex-shrink: 0; border: 2px solid transparent; box-sizing: content-box; user-select: none; background-size: cover; background-position: center; overflow: hidden; }
-.avatar.speaking { border-color: #3ad07a; }
+.avatar { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; flex-shrink: 0; border: 2px solid transparent; box-sizing: content-box; user-select: none; background-size: cover; background-position: center; overflow: hidden;
+  /* Fala: acende rápido, apaga devagar (como no Discord) */
+  transition: border-color .7s ease-out, box-shadow .7s ease-out; }
+.avatar.speaking { border-color: #3ad07a; box-shadow: 0 0 0 2px rgba(58, 208, 122, .3); transition: border-color .06s ease-in, box-shadow .06s ease-in; }
 
 .sidebar { width: 240px; background: #2b2d31; display: flex; flex-direction: column; }
 .server-header { padding: 14px 16px; font-weight: 700; color: #fff; border-bottom: 1px solid #1e1f22; }
@@ -107,18 +109,41 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #preview-close .icon { width: 18px; height: 18px; }
 
 /* Editar perfil */
-#profile-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 10; }
-#profile-card { background: #2b2d31; border-radius: 8px; padding: 24px; width: 320px; max-width: 90vw; position: relative; display: flex; flex-direction: column; align-items: center; gap: 16px; }
-#profile-title { color: #fff; font-weight: 700; font-size: 18px; }
-#profile-avatar-holder .avatar { cursor: pointer; }
-#avatar-pick { padding: 10px 16px; border: none; border-radius: 4px; background: #5865f2; color: #fff; font-weight: 600; cursor: pointer; }
-#avatar-pick:hover { background: #4752c4; }
-#avatar-remove { padding: 8px 16px; border: 1px solid #f23f43; border-radius: 4px; background: transparent; color: #f23f43; font-weight: 600; cursor: pointer; }
-#avatar-remove:hover { background: #f23f43; color: #fff; }
-.rename-row { display: flex; gap: 8px; width: 100%; }
-.rename-row input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 4px; border: none; background: #1e1f22; color: #dbdee1; }
-.rename-row button { padding: 8px 12px; border: none; border-radius: 4px; background: #4e5058; color: #fff; font-weight: 600; cursor: pointer; }
-.rename-row button:hover { background: #5c5e66; }
-#profile-close { position: absolute; top: 10px; right: 10px; background: none; border: none; color: #b5bac1; cursor: pointer; }
+#profile-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 20px; }
+#profile-card { background: #2b2d31; border-radius: 10px; width: 420px; max-width: 100%; max-height: 90vh; overflow-y: auto; position: relative; display: flex; flex-direction: column; }
+
+.profile-header { display: flex; align-items: center; gap: 16px; padding: 24px; background: #232428; border-radius: 10px 10px 0 0; }
+#profile-avatar-holder { position: relative; cursor: pointer; border-radius: 50%; flex-shrink: 0; }
+#profile-avatar-holder .avatar { cursor: pointer; display: block; }
+.avatar-overlay { position: absolute; inset: 0; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; pointer-events: none; }
+#profile-avatar-holder:hover .avatar-overlay { opacity: 1; }
+.profile-id { min-width: 0; }
+#profile-display-name { color: #fff; font-size: 20px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-sub { color: #949ba4; font-size: 13px; margin-top: 2px; }
+
+.profile-section { padding: 16px 24px; border-top: 1px solid #1e1f22; }
+.section-label { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: #949ba4; font-weight: 700; margin-bottom: 10px; }
+.section-hint { display: block; color: #949ba4; font-size: 12px; margin-top: 6px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.profile-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-primary, .btn-danger { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 14px; }
+.btn-primary { border: none; background: #5865f2; color: #fff; }
+.btn-primary:hover { background: #4752c4; }
+.btn-danger { border: 1px solid #f23f43; background: transparent; color: #f23f43; }
+.btn-danger:hover { background: #f23f43; color: #fff; }
+.btn-primary .icon, .btn-danger .icon { width: 16px; height: 16px; }
+
+.rename-row { display: flex; gap: 8px; }
+.rename-row input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 4px; border: 1px solid #1e1f22; background: #1e1f22; color: #dbdee1; font-size: 14px; }
+.rename-row input:focus { outline: none; border-color: #5865f2; }
+
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #dbdee1; font-size: 14px; cursor: pointer; }
+.toggle-row input { appearance: none; width: 40px; height: 22px; border-radius: 11px; background: #4e5058; position: relative; cursor: pointer; flex-shrink: 0; transition: background .15s; }
+.toggle-row input::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.toggle-row input:checked { background: #23a559; }
+.toggle-row input:checked::after { transform: translateX(18px); }
+
+#profile-error, #profile-ok { padding: 0 24px 16px; min-height: 0; }
+#profile-ok { color: #23a559; font-size: 13px; text-align: center; }
+#profile-close { position: absolute; top: 12px; right: 12px; background: none; border: none; color: #b5bac1; cursor: pointer; z-index: 1; }
 #profile-close:hover { color: #fff; }
 #profile-close .icon { width: 18px; height: 18px; }

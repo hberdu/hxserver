@@ -241,13 +241,14 @@ function voiceUserName(id) {
 $('voice-channel').onclick = joinVoice;
 $('leave-voice-btn').onclick = leaveVoice;
 $('mute-btn').onclick = toggleMute;
+$('deafen-btn').onclick = toggleDeafen;
 $('screen-btn').onclick = toggleScreen;
 
 async function joinVoice() {
   if (inVoice) return;
   inVoice = true; // antes do await: bloqueia duplo clique durante o prompt do microfone
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
   } catch (err) {
     inVoice = false;
     systemMessage('Sem acesso ao microfone: ' + err.message);
@@ -286,19 +287,41 @@ function leaveVoice() {
   removeVoiceUser(selfId);
   $('mute-btn').classList.remove('active');
   $('mute-icon').setAttribute('href', '#i-mic');
+  deafened = false;
+  $('deafen-btn').classList.remove('active');
+  $('deafen-icon').setAttribute('href', '#i-headset');
   playSound('leave');
   if (previewId) updatePreview();
 }
 
+let deafened = false;
+
+function setMuted(muted, sound = true) {
+  const track = localStream?.getAudioTracks()[0];
+  if (!track || track.enabled !== muted) return; // já está no estado pedido
+  track.enabled = !muted;
+  $('mute-btn').classList.toggle('active', muted);
+  $('mute-icon').setAttribute('href', muted ? '#i-mic-off' : '#i-mic');
+  setVoiceMuted(selfId, muted);
+  socket.emit('set-muted', { muted });
+  if (sound) playSound(muted ? 'mute' : 'unmute');
+}
+
 function toggleMute() {
   if (!localStream) return;
-  const track = localStream.getAudioTracks()[0];
-  track.enabled = !track.enabled;
-  $('mute-btn').classList.toggle('active', !track.enabled);
-  $('mute-icon').setAttribute('href', track.enabled ? '#i-mic' : '#i-mic-off');
-  setVoiceMuted(selfId, !track.enabled);
-  socket.emit('set-muted', { muted: !track.enabled });
-  playSound(track.enabled ? 'unmute' : 'mute');
+  if (deafened) { toggleDeafen(); return; } // sair do modo silenciado devolve a escuta e o mic
+  setMuted(localStream.getAudioTracks()[0].enabled);
+}
+
+// Silenciar o canal: para de ouvir todo mundo e também fecha o próprio microfone
+function toggleDeafen() {
+  if (!inVoice) return;
+  deafened = !deafened;
+  document.querySelectorAll('audio[id^="audio-"]').forEach((a) => { a.muted = deafened; });
+  $('deafen-btn').classList.toggle('active', deafened);
+  $('deafen-icon').setAttribute('href', deafened ? '#i-headset-off' : '#i-headset');
+  setMuted(deafened, false); // silenciado implica microfone fechado
+  playSound(deafened ? 'mute' : 'unmute');
 }
 
 socket.on('voice-user-joined', ({ id, username: name }) => {
@@ -314,6 +337,33 @@ socket.on('voice-user-left', ({ id }) => {
   if (inVoice) playSound('leave');
 });
 
+// ---------- Tratamento do microfone (redução de ruído estilo Discord) ----------
+let noiseSuppression = localStorage.getItem('hx-noise') !== 'off';
+
+function micConstraints() {
+  return {
+    noiseSuppression,          // filtra ventilador, ar-condicionado, chiado
+    echoCancellation: true,    // evita retorno do som dos outros pelo alto-falante
+    autoGainControl: true,     // normaliza volume da voz
+    channelCount: 1,
+    ...(noiseSuppression ? { googNoiseSuppression: true, googHighpassFilter: true } : {}),
+  };
+}
+
+async function applyMicSettings() {
+  noiseSuppression = $('noise-toggle').checked;
+  localStorage.setItem('hx-noise', noiseSuppression ? 'on' : 'off');
+  const track = localStream?.getAudioTracks()[0];
+  if (!track) return;
+  try {
+    await track.applyConstraints(micConstraints()); // troca em tempo real, sem recriar a conexão
+    $('profile-ok').textContent = noiseSuppression ? 'Redução de ruído ativada.' : 'Redução de ruído desativada.';
+    setTimeout(() => { $('profile-ok').textContent = ''; }, 2500);
+  } catch {
+    $('profile-error').textContent = 'Seu navegador não permitiu alterar o filtro agora.';
+  }
+}
+
 // ---------- Detecção de fala (contorno verde no avatar) ----------
 const meters = new Map(); // id -> { analyser, data, src }
 let meterTimer = null;
@@ -326,8 +376,8 @@ function attachSpeaking(id, stream) {
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
     src.connect(analyser); // analyser não vai ao destination: só medição, sem eco
-    meters.set(id, { analyser, data: new Uint8Array(analyser.frequencyBinCount), src });
-    if (!meterTimer) meterTimer = setInterval(pollSpeaking, 120);
+    meters.set(id, { analyser, data: new Uint8Array(analyser.frequencyBinCount), src, speaking: false, lastLoud: 0 });
+    if (!meterTimer) meterTimer = setInterval(pollSpeaking, 100);
   } catch { /* medidor é opcional */ }
 }
 
@@ -344,12 +394,29 @@ function voiceAvatar(id) {
   return document.querySelector('#voice-user-' + CSS.escape(id) + ' .avatar');
 }
 
+// Histerese + hold: liga acima de ON, só desliga abaixo de OFF e após HOLD_MS de silêncio.
+// Evita o pisca-pisca nas pausas naturais da fala; o fade do CSS completa a saída suave.
+const SPEAK_ON = 5;
+const SPEAK_OFF = 3;
+const SPEAK_HOLD_MS = 1200;
+
 function pollSpeaking() {
+  const now = performance.now();
   meters.forEach((m, id) => {
     m.analyser.getByteTimeDomainData(m.data);
     let sum = 0;
     for (const v of m.data) { const d = v - 128; sum += d * d; }
-    voiceAvatar(id)?.classList.toggle('speaking', Math.sqrt(sum / m.data.length) > 4);
+    const level = Math.sqrt(sum / m.data.length);
+
+    if (level > SPEAK_ON) m.lastLoud = now;
+    const speaking = m.speaking
+      ? (level > SPEAK_OFF || now - (m.lastLoud || 0) < SPEAK_HOLD_MS)
+      : level > SPEAK_ON;
+
+    if (speaking !== m.speaking) {
+      m.speaking = speaking;
+      voiceAvatar(id)?.classList.toggle('speaking', speaking);
+    }
   });
 }
 
@@ -389,6 +456,7 @@ function getPeer(peerId) {
       const audio = new Audio();
       audio.srcObject = stream;
       audio.autoplay = true;
+      audio.muted = deafened; // quem chega durante o modo silenciado também fica mudo
       audio.id = 'audio-' + peerId;
       document.body.appendChild(audio);
       attachSpeaking(peerId, stream);
@@ -663,19 +731,31 @@ $('preview-watch').onclick = () => {
 };
 
 // ---------- Editar perfil (foto) ----------
+function renderProfileAvatar() {
+  const overlay = document.createElement('div');
+  overlay.className = 'avatar-overlay';
+  overlay.innerHTML = '<svg class="icon"><use href="#i-image"/></svg>';
+  $('profile-avatar-holder').replaceChildren(avatarEl(username, 80), overlay);
+}
+
 $('user-footer').onclick = () => {
-  $('profile-avatar-holder').replaceChildren(avatarEl(username, 96));
+  renderProfileAvatar();
+  $('profile-display-name').textContent = username;
   $('rename-input').value = username;
+  $('noise-toggle').checked = noiseSuppression;
   $('profile-error').textContent = '';
+  $('profile-ok').textContent = '';
   $('profile-overlay').classList.remove('hidden');
 };
+
+$('noise-toggle').onchange = applyMicSettings;
 
 $('avatar-remove').onclick = () => {
   socket.emit('set-avatar', { img: null }, (res) => {
     if (!res || res.error) { $('profile-error').textContent = (res && res.error) || 'Falha ao remover.'; return; }
     avatares.delete(username);
     refreshAvatars(username);
-    $('profile-avatar-holder').replaceChildren(avatarEl(username, 96));
+    renderProfileAvatar();
   });
 };
 
@@ -713,7 +793,7 @@ $('rename-save').onclick = () => {
     applyRename(selfId, oldName, username);
     $('self-name').textContent = username;
     $('self-avatar').replaceChildren(avatarEl(username, 28));
-    $('profile-avatar-holder').replaceChildren(avatarEl(username, 96));
+    renderProfileAvatar();
     $('profile-error').textContent = '';
   });
 };
@@ -752,7 +832,7 @@ $('avatar-file').onchange = async () => {
     }
     avatares.set(username, img);
     refreshAvatars(username);
-    $('profile-avatar-holder').replaceChildren(avatarEl(username, 96));
+    renderProfileAvatar();
   });
 };
 
