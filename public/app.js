@@ -31,7 +31,11 @@ const avatares = new Map(); // username -> data URL da foto
 function styleAvatar(div, name) {
   const photo = avatares.get(name);
   if (photo) {
+    // Nunca usar a shorthand "background" aqui: ela zera size/position e o recorte sai do centro
+    div.style.background = 'none';
     div.style.backgroundImage = 'url("' + photo + '")';
+    div.style.backgroundSize = 'cover';
+    div.style.backgroundPosition = 'center';
     div.textContent = '';
   } else {
     let h = 0;
@@ -58,8 +62,9 @@ function refreshAvatars(name) {
 }
 
 socket.on('avatar-changed', ({ username: name, avatar }) => {
-  if (typeof name !== 'string' || typeof avatar !== 'string') return;
-  avatares.set(name, avatar);
+  if (typeof name !== 'string') return;
+  if (typeof avatar === 'string') avatares.set(name, avatar);
+  else avatares.delete(name); // foto removida
   refreshAvatars(name);
 });
 
@@ -407,7 +412,7 @@ function removePeer(peerId) {
   const state = peers.get(peerId);
   if (!state) return;
   peers.delete(peerId);
-  viewerSenders.delete(peerId);
+  if (viewerSenders.delete(peerId)) retuneSenders(); // espectador caiu: redistribui banda
   watching.delete(peerId);
   detachSpeaking(peerId);
   state.pc.close();
@@ -456,6 +461,9 @@ async function toggleScreen() {
     // 1080p60: nítido e fluido sem afogar encoder/rede (4K travava; WebRTC ainda adapta se faltar banda)
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } },
+      surfaceSwitching: 'include',    // trocar de janela sem parar a live
+      selfBrowserSurface: 'exclude',  // evita efeito túnel capturando a própria aba
+      monitorTypeSurfaces: 'include',
     });
   } catch { return; } // usuário cancelou o seletor
   finally { screenPending = false; }
@@ -500,17 +508,28 @@ function sendThumb() {
   socket.emit('screen-thumb', { img: canvas.toDataURL('image/jpeg', 0.5) });
 }
 
-// Qualidade máxima: bitrate alto e prioridade de frame rate no sender
-function boostSender(sender) {
-  const apply = () => {
+// Codec: VP9 comprime ~30-40% melhor que o VP8 padrão — mais qualidade no mesmo bitrate
+function preferBestCodec(pc, sender) {
+  try {
+    const transceiver = pc.getTransceivers().find((t) => t.sender === sender);
+    const codecs = RTCRtpSender.getCapabilities('video')?.codecs;
+    if (!transceiver || !codecs) return;
+    const rank = (c) => (/VP9/i.test(c.mimeType) ? 0 : /AV1/i.test(c.mimeType) ? 1 : 2);
+    transceiver.setCodecPreferences([...codecs].sort((a, b) => rank(a) - rank(b)));
+  } catch { /* navegador sem suporte: fica o codec padrão */ }
+}
+
+// Bitrate adaptativo: mesh = 1 encode por espectador; divide o orçamento para não travar
+function retuneSenders() {
+  const n = Math.max(1, viewerSenders.size);
+  const bitrate = Math.max(2_500_000, Math.floor(8_000_000 / n)); // 8 Mbps sozinho, piso de 2.5
+  viewerSenders.forEach((sender) => {
     const p = sender.getParameters();
-    if (!p.encodings || !p.encodings.length) return false;
+    if (!p.encodings || !p.encodings.length) return;
     p.degradationPreference = 'maintain-framerate';
-    p.encodings[0].maxBitrate = 6_000_000; // 6 Mbps: teto saudável p/ 1080p60 em mesh (1 encode por espectador)
+    p.encodings[0].maxBitrate = bitrate;
     sender.setParameters(p).catch(() => {});
-    return true;
-  };
-  if (!apply()) setTimeout(apply, 2000); // encodings só existem após a negociação
+  });
 }
 
 // Espectador pediu para assistir minha tela
@@ -520,7 +539,9 @@ socket.on('watch-request', ({ from } = {}) => {
   if (!peer || viewerSenders.has(from)) return;
   const sender = peer.pc.addTrack(screenStream.getVideoTracks()[0], screenStream);
   viewerSenders.set(from, sender);
-  boostSender(sender);
+  preferBestCodec(peer.pc, sender);
+  retuneSenders();
+  setTimeout(retuneSenders, 2000); // encodings só existem após a negociação completar
 });
 
 socket.on('watch-stop', ({ from } = {}) => {
@@ -528,6 +549,7 @@ socket.on('watch-stop', ({ from } = {}) => {
   if (!sender) return;
   viewerSenders.delete(from);
   try { peers.get(from)?.pc.removeTrack(sender); } catch { /* pc já fechado */ }
+  retuneSenders(); // sobrou banda para os que ficaram
 });
 
 // ---------- Transmissões dos outros: badge AO VIVO + prévia + assistir ----------
@@ -643,8 +665,57 @@ $('preview-watch').onclick = () => {
 // ---------- Editar perfil (foto) ----------
 $('user-footer').onclick = () => {
   $('profile-avatar-holder').replaceChildren(avatarEl(username, 96));
+  $('rename-input').value = username;
   $('profile-error').textContent = '';
   $('profile-overlay').classList.remove('hidden');
+};
+
+$('avatar-remove').onclick = () => {
+  socket.emit('set-avatar', { img: null }, (res) => {
+    if (!res || res.error) { $('profile-error').textContent = (res && res.error) || 'Falha ao remover.'; return; }
+    avatares.delete(username);
+    refreshAvatars(username);
+    $('profile-avatar-holder').replaceChildren(avatarEl(username, 96));
+  });
+};
+
+function applyRename(id, oldName, newName) {
+  const photo = avatares.get(oldName);
+  if (photo) { avatares.set(newName, photo); avatares.delete(oldName); }
+  const userLi = document.getElementById('user-' + id);
+  if (userLi) {
+    const span = document.createElement('span');
+    span.textContent = newName;
+    userLi.replaceChildren(avatarEl(newName, 26), span);
+  }
+  const voiceLi = document.getElementById('voice-user-' + id);
+  if (voiceLi) {
+    voiceLi.querySelector('.name').textContent = newName;
+    voiceLi.querySelector('.avatar').replaceWith(avatarEl(newName, 24));
+  }
+  const sharer = sharers.get(id);
+  if (sharer) sharer.username = newName;
+}
+
+socket.on('user-renamed', ({ id, oldName, newName } = {}) => {
+  if (typeof id !== 'string' || typeof newName !== 'string') return;
+  applyRename(id, oldName, newName);
+  systemMessage(oldName + ' agora se chama ' + newName);
+});
+
+$('rename-save').onclick = () => {
+  const name = $('rename-input').value.trim();
+  if (!name || name === username) return;
+  socket.emit('rename', { username: name }, (res) => {
+    if (!res || res.error) { $('profile-error').textContent = (res && res.error) || 'Falha ao trocar o nome.'; return; }
+    const oldName = username;
+    username = res.username;
+    applyRename(selfId, oldName, username);
+    $('self-name').textContent = username;
+    $('self-avatar').replaceChildren(avatarEl(username, 28));
+    $('profile-avatar-holder').replaceChildren(avatarEl(username, 96));
+    $('profile-error').textContent = '';
+  });
 };
 $('profile-close').onclick = () => $('profile-overlay').classList.add('hidden');
 $('profile-overlay').onclick = (e) => { if (e.target === $('profile-overlay')) $('profile-overlay').classList.add('hidden'); };

@@ -23,6 +23,7 @@ const insertUser = db.prepare('INSERT INTO users (username, salt, hash) VALUES (
 const getUser = db.prepare('SELECT username, salt, hash FROM users WHERE username = ?');
 const getAvatar = db.prepare('SELECT avatar FROM users WHERE username = ?');
 const setAvatar = db.prepare('UPDATE users SET avatar = ? WHERE username = ?');
+const renameUser = db.prepare('UPDATE users SET username = ? WHERE username = ?');
 
 // Async: hashing roda no threadpool, não trava o event loop (chat/sinalização seguem fluindo)
 const scrypt = require('util').promisify(crypto.scrypt);
@@ -144,10 +145,29 @@ io.on('connection', (socket) => {
     if (typeof ack !== 'function') return;
     if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
     const img = payload && payload.img;
-    if (!validImage(img, MAX_AVATAR)) return ack({ error: 'Imagem inválida (JPEG/PNG/WebP, máx. 100KB).' });
-    setAvatar.run(img, username);
+    if (img !== null && !validImage(img, MAX_AVATAR)) return ack({ error: 'Imagem inválida (JPEG/PNG/WebP, máx. 100KB).' });
+    setAvatar.run(img, username); // null remove a foto
     ack({ ok: true });
     socket.to(SERVER_NAME).emit('avatar-changed', { username, avatar: img });
+  });
+
+  socket.on('rename', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
+    const raw = payload && payload.username;
+    if (typeof raw !== 'string') return ack({ error: 'Nome inválido.' });
+    const name = raw.trim();
+    if (name.length < MIN_NAME || name.length > MAX_NAME) return ack({ error: `Nome deve ter entre ${MIN_NAME} e ${MAX_NAME} caracteres.` });
+    try {
+      renameUser.run(name, username);
+    } catch {
+      return ack({ error: 'Esse nome já existe.' });
+    }
+    const oldName = username;
+    username = name;
+    state.users.set(socket.id, username);
+    ack({ ok: true, username });
+    socket.to(SERVER_NAME).emit('user-renamed', { id: socket.id, oldName, newName: name });
   });
 
   socket.on('chat-message', (payload) => {

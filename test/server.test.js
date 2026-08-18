@@ -167,6 +167,47 @@ test('set-avatar: salva no banco, propaga e chega no login de quem entra depois'
   assert.equal(rc.avatars.ana, 'data:image/jpeg;base64,AAAA');
 });
 
+test('set-avatar null remove a foto do banco e propaga', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  const first = once(b, 'avatar-changed');
+  await emitAck(a, 'set-avatar', { img: 'data:image/jpeg;base64,AAAA' });
+  await first; // consome o broadcast do set antes de esperar o do remove
+
+  const changed = once(b, 'avatar-changed');
+  const ok = await emitAck(a, 'set-avatar', { img: null });
+  assert.equal(ok.ok, true);
+  assert.equal((await changed).avatar, null);
+  assert.equal(db.prepare('SELECT avatar FROM users WHERE username = ?').get('ana').avatar, null);
+});
+
+test('rename: atualiza banco e estado, propaga, rejeita duplicado e inválido', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+
+  assert.ok((await emitAck(a, 'rename', { username: 'beto' })).error, 'nome já usado');
+  assert.ok((await emitAck(a, 'rename', { username: 'ab' })).error, 'curto demais');
+  const semLogin = await connect();
+  assert.ok((await emitAck(semLogin, 'rename', { username: 'novo' })).error, 'sem login');
+
+  const notice = once(b, 'user-renamed');
+  const ok = await emitAck(a, 'rename', { username: 'anastacia' });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.username, 'anastacia');
+  const ev = await notice;
+  assert.equal(ev.id, a.id);
+  assert.equal(ev.oldName, 'ana');
+  assert.equal(ev.newName, 'anastacia');
+  assert.ok(db.prepare('SELECT 1 FROM users WHERE username = ?').get('anastacia'));
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE username = ?').get('ana'), undefined);
+  assert.equal(state.users.get(a.id), 'anastacia');
+
+  // mensagens novas saem com o nome novo
+  const got = once(b, 'chat-message');
+  a.emit('chat-message', { text: 'oi' });
+  assert.equal((await got).username, 'anastacia');
+});
+
 // ---------- Chat ----------
 
 test('chat: broadcast para todos e histórico para quem chega depois', async () => {

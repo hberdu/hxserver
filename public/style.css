@@ -113,6 +113,12 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #profile-avatar-holder .avatar { cursor: pointer; }
 #avatar-pick { padding: 10px 16px; border: none; border-radius: 4px; background: #5865f2; color: #fff; font-weight: 600; cursor: pointer; }
 #avatar-pick:hover { background: #4752c4; }
+#avatar-remove { padding: 8px 16px; border: 1px solid #f23f43; border-radius: 4px; background: transparent; color: #f23f43; font-weight: 600; cursor: pointer; }
+#avatar-remove:hover { background: #f23f43; color: #fff; }
+.rename-row { display: flex; gap: 8px; width: 100%; }
+.rename-row input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 4px; border: none; background: #1e1f22; color: #dbdee1; }
+.rename-row button { padding: 8px 12px; border: none; border-radius: 4px; background: #4e5058; color: #fff; font-weight: 600; cursor: pointer; }
+.rename-row button:hover { background: #5c5e66; }
 #profile-close { position: absolute; top: 10px; right: 10px; background: none; border: none; color: #b5bac1; cursor: pointer; }
 #profile-close:hover { color: #fff; }
 #profile-close .icon { width: 18px; height: 18px; }
