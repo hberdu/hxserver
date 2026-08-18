@@ -52,6 +52,7 @@ const state = {
   users: new Map(),    // socketId -> username
   messages: [],
   voice: new Set(),    // socketIds no canal de voz
+  muted: new Set(),    // socketIds mutados
   sharing: new Set(),  // socketIds transmitindo tela
   thumbs: new Map(),   // socketId -> último thumbnail (data URL)
 };
@@ -107,7 +108,7 @@ io.on('connection', (socket) => {
       username, // nome canônico do banco (login "ANA" -> "ana")
       messages: state.messages,
       users: userList(),
-      voiceUsers: [...state.voice].map((id) => ({ id, username: state.users.get(id) })),
+      voiceUsers: [...state.voice].map((id) => ({ id, username: state.users.get(id), muted: state.muted.has(id) })),
       sharers: [...state.sharing].map((id) => ({ id, username: state.users.get(id), thumb: state.thumbs.get(id) || null })),
     });
     socket.to(SERVER_NAME).emit('user-joined', { id: socket.id, username });
@@ -171,6 +172,14 @@ io.on('connection', (socket) => {
     if (!already) socket.to(SERVER_NAME).emit('voice-user-joined', { id: socket.id, username });
   });
 
+  socket.on('set-muted', (payload) => {
+    if (!loggedIn() || !state.voice.has(socket.id)) return;
+    const muted = !!(payload && payload.muted);
+    if (muted) state.muted.add(socket.id);
+    else state.muted.delete(socket.id);
+    socket.to(SERVER_NAME).emit('user-muted', { id: socket.id, muted });
+  });
+
   function stopSharing() {
     if (state.sharing.delete(socket.id)) {
       state.thumbs.delete(socket.id);
@@ -180,6 +189,7 @@ io.on('connection', (socket) => {
 
   function leaveVoice() {
     stopSharing();
+    state.muted.delete(socket.id);
     if (state.voice.delete(socket.id)) {
       socket.to(SERVER_NAME).emit('voice-user-left', { id: socket.id });
     }

@@ -255,6 +255,32 @@ test('sinalização: relay só entre membros do canal de voz', async () => {
   assert.equal(leaked, false);
 });
 
+test('set-muted: propaga aos demais, entra no login ack e limpa ao sair da voz', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  await joinVoice(a);
+
+  let leaked = false;
+  a.on('user-muted', () => { leaked = true; });
+  b.emit('set-muted', { muted: true }); // b não está na voz
+  await sleep(80);
+  assert.equal(leaked, false);
+
+  const got = once(b, 'user-muted');
+  a.emit('set-muted', { muted: true });
+  const ev = await got;
+  assert.equal(ev.id, a.id);
+  assert.equal(ev.muted, true);
+
+  const c = await connect();
+  const rc = await emitAck(c, 'register', { username: 'carla', password: 'senha123' });
+  assert.equal(rc.voiceUsers.find((u) => u.id === a.id).muted, true);
+
+  a.emit('leave-voice');
+  await sleep(80);
+  assert.equal(state.muted.size, 0, 'sair da voz limpa o mute');
+});
+
 test('disconnect: limpa usuário, voz e transmissão', async () => {
   const a = await loggedClient('ana');
   const b = await loggedClient('beto');

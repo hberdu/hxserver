@@ -41,6 +41,9 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .voice-users { list-style: none; padding-left: 24px; }
 .voice-users li { padding: 3px 8px; font-size: 14px; color: #949ba4; display: flex; align-items: center; gap: 8px; }
 .voice-users li .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-users li .mute-ind { display: none; margin-left: auto; color: #949ba4; }
+.voice-users li.muted .mute-ind { display: inline-flex; }
+.mute-ind .icon { width: 14px; height: 14px; }
 .live-badge { background: #f23f43; color: #fff; font-size: 9px; font-weight: 700; letter-spacing: .4px; padding: 2px 5px; border-radius: 4px; margin-left: 8px; cursor: pointer; flex-shrink: 0; }
 .live-badge:hover { background: #d83134; }
 

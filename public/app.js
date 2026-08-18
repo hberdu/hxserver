@@ -115,7 +115,7 @@ function auth(event) {
     $('self-avatar').replaceChildren(avatarEl(username, 28));
     res.messages.forEach(renderMessage);
     res.users.forEach((user) => addUser(user.id, user.username));
-    res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username));
+    res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted));
     res.sharers.forEach((s) => {
       sharers.set(s.id, { username: s.username, thumb: s.thumb });
       updateBadge(s.id, true);
@@ -200,17 +200,28 @@ const sharers = new Map();       // sharerId -> { username, thumb }
 const watching = new Set();      // sharerIds que estou assistindo
 const viewerSenders = new Map(); // viewerId -> RTCRtpSender do meu vídeo de tela
 
-function addVoiceUser(id, name) {
+function addVoiceUser(id, name, muted = false) {
   if (document.getElementById('voice-user-' + id)) return;
   const li = document.createElement('li');
   li.id = 'voice-user-' + id;
   const span = document.createElement('span');
   span.className = 'name';
   span.textContent = name;
-  li.append(avatarEl(name.replace(' (você)', ''), 24), span);
+  const muteInd = document.createElement('span');
+  muteInd.className = 'mute-ind';
+  muteInd.title = 'Mutado';
+  muteInd.innerHTML = '<svg class="icon"><use href="#i-mic-off"/></svg>';
+  li.append(avatarEl(name, 24), span, muteInd);
+  li.classList.toggle('muted', muted);
   $('voice-users').appendChild(li);
   if (sharers.has(id)) updateBadge(id, true);
 }
+
+function setVoiceMuted(id, muted) {
+  document.getElementById('voice-user-' + id)?.classList.toggle('muted', !!muted);
+}
+
+socket.on('user-muted', ({ id, muted } = {}) => setVoiceMuted(id, muted));
 
 function removeVoiceUser(id) {
   document.getElementById('voice-user-' + id)?.remove();
@@ -246,7 +257,7 @@ async function joinVoice() {
       return;
     }
     $('voice-controls').classList.remove('hidden');
-    addVoiceUser(selfId, username + ' (você)');
+    addVoiceUser(selfId, username);
     attachSpeaking(selfId, localStream);
     // Novato inicia a conexão com cada participante já presente
     res.peers.forEach(({ id }) => getPeer(id));
@@ -280,6 +291,8 @@ function toggleMute() {
   track.enabled = !track.enabled;
   $('mute-btn').classList.toggle('active', !track.enabled);
   $('mute-icon').setAttribute('href', track.enabled ? '#i-mic' : '#i-mic-off');
+  setVoiceMuted(selfId, !track.enabled);
+  socket.emit('set-muted', { muted: !track.enabled });
   playSound(track.enabled ? 'unmute' : 'mute');
 }
 
@@ -440,8 +453,9 @@ async function toggleScreen() {
   let stream;
   try {
     // Seletor nativo: tela inteira, janela ou aplicativo aberto (mesmo mecanismo do Discord)
+    // 1080p60: nítido e fluido sem afogar encoder/rede (4K travava; WebRTC ainda adapta se faltar banda)
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
+      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } },
     });
   } catch { return; } // usuário cancelou o seletor
   finally { screenPending = false; }
@@ -492,7 +506,7 @@ function boostSender(sender) {
     const p = sender.getParameters();
     if (!p.encodings || !p.encodings.length) return false;
     p.degradationPreference = 'maintain-framerate';
-    p.encodings[0].maxBitrate = 10_000_000; // 10 Mbps
+    p.encodings[0].maxBitrate = 6_000_000; // 6 Mbps: teto saudável p/ 1080p60 em mesh (1 encode por espectador)
     sender.setParameters(p).catch(() => {});
     return true;
   };
@@ -643,13 +657,19 @@ $('avatar-file').onchange = async () => {
   if (!file) return;
   let img;
   try {
-    // Recorte central quadrado, 96px — sempre cabe no limite do servidor
+    // Recorte quadrado 256px: nítido mesmo em telas de alta densidade.
+    // Retrato: rosto costuma ficar no terço superior — recorte puxado para cima, não o centro.
     const bmp = await createImageBitmap(file);
     const side = Math.min(bmp.width, bmp.height);
+    const sx = (bmp.width - side) / 2;
+    const sy = bmp.height > bmp.width ? (bmp.height - side) * 0.2 : (bmp.height - side) / 2;
     const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 96;
-    canvas.getContext('2d').drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, 96, 96);
-    img = canvas.toDataURL('image/jpeg', 0.85);
+    canvas.width = canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, sx, sy, side, side, 0, 0, 256, 256);
+    img = canvas.toDataURL('image/jpeg', 0.92);
+    if (img.length > 100 * 1024) img = canvas.toDataURL('image/jpeg', 0.8); // garante o limite do servidor
   } catch {
     $('profile-error').textContent = 'Não consegui ler essa imagem.';
     return;
