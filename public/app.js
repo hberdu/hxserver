@@ -100,12 +100,21 @@ const SOUNDS = {
 };
 let audioCtx = null;
 
-function playSound(name) {
+// Destrava o áudio no primeiro clique: sem isso o contexto fica suspenso e os alertas somem
+document.addEventListener('click', () => {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+  } catch { /* som é opcional */ }
+}, { capture: true });
+
+async function playSound(name) {
   const seq = SOUNDS[name];
   if (!seq) return;
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+    // resume() é assíncrono: agendar antes dele terminar faz o som ser descartado
+    if (audioCtx.state !== 'running') await audioCtx.resume();
     const t0 = audioCtx.currentTime;
     seq.forEach(([freq, at, dur]) => {
       const osc = audioCtx.createOscillator();
@@ -310,6 +319,7 @@ async function joinVoice() {
     $('voice-controls').classList.remove('hidden');
     addVoiceUser(selfId, username);
     attachSpeaking(selfId, localStream);
+    playSound('userJoin'); // toca também para quem entrou, não só para quem já estava
     sessionStorage.setItem('hx-in-voice', '1'); // volta pra call sozinho se cair
     // Novato inicia a conexão com cada participante já presente
     res.peers.forEach(({ id }) => getPeer(id));
