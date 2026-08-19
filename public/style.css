@@ -43,12 +43,12 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .channel:hover, .channel.active { background: #404249; color: #fff; }
 .voice-users { list-style: none; padding-left: 24px; }
 .voice-users li { padding: 3px 8px; font-size: 14px; color: #949ba4; display: flex; align-items: center; gap: 8px; }
+.voice-users li { cursor: pointer; border-radius: 4px; }
+.voice-users li:hover { background: #35373c; color: #dbdee1; }
 .voice-users li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-users li .mute-ind, .voice-users li .deaf-ind { display: none; color: #949ba4; }
 .voice-users li.muted .mute-ind, .voice-users li.deafened .deaf-ind { display: inline-flex; }
 .mute-ind .icon, .deaf-ind .icon { width: 14px; height: 14px; }
-.voice-users li .vol-slider { display: none; width: 64px; accent-color: #5865f2; flex-shrink: 0; }
-.voice-users li:hover .vol-slider { display: block; }
 .live-badge { background: #f23f43; color: #fff; font-size: 9px; font-weight: 700; letter-spacing: .4px; padding: 2px 5px; border-radius: 4px; margin-left: 8px; cursor: pointer; flex-shrink: 0; }
 .live-badge:hover { background: #d83134; }
 
@@ -126,9 +126,17 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #preview-close:hover { color: #fff; }
 #preview-close .icon { width: 18px; height: 18px; }
 
-/* Editar perfil */
-#profile-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 20px; }
-#profile-card { background: #2b2d31; border-radius: 10px; width: 420px; max-width: 100%; max-height: 90vh; overflow-y: auto; position: relative; display: flex; flex-direction: column; }
+/* Ícones (sprite oculto — classe em vez de style inline por causa da CSP) */
+.svg-defs { display: none; }
+
+/* Editar perfil + perfil de membro (mesma estilização de modal) */
+#profile-overlay, #user-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 20px; }
+#profile-card, #user-card { background: #2b2d31; border-radius: 10px; width: 420px; max-width: 100%; max-height: 90vh; overflow-y: auto; position: relative; display: flex; flex-direction: column; }
+#user-card-name { color: #fff; font-size: 20px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#user-close { position: absolute; top: 12px; right: 12px; background: none; border: none; color: #b5bac1; cursor: pointer; z-index: 1; }
+#user-close:hover { color: #fff; }
+#user-close .icon { width: 18px; height: 18px; }
+.vol-range { width: 100%; accent-color: #5865f2; cursor: pointer; }
 
 .profile-header { display: flex; align-items: center; gap: 16px; padding: 24px; background: #232428; border-radius: 10px 10px 0 0; }
 #profile-avatar-holder { position: relative; cursor: pointer; border-radius: 50%; flex-shrink: 0; }

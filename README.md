@@ -14,7 +14,7 @@ Abra http://localhost:3000, crie uma conta (usuário + senha) e entre.
 - **Conta**: senha guardada no SQLite apenas como hash scrypt + salt único — irreversível, nenhum dev consegue ler a senha.
 - **Chat**: #geral, histórico das últimas 100 mensagens persistido no SQLite (sobrevive a restart). Editar/apagar as próprias mensagens, colar print com Ctrl+V, @menção com destaque e som, links clicáveis, mensagens seguidas agrupadas, indicador "fulano está digitando…", contador de não lidas no título da aba com som de alerta.
 - **Membros**: lista com seções Online/Offline e contagem (todas as contas do servidor aparecem).
-- **Voz**: clique em "Voz" e permita o microfone. Áudio P2P (WebRTC mesh). Mutar (Ctrl+Shift+M), silenciar o canal (Ctrl+Shift+D) e push-to-talk opcional (tecla configurável no perfil) com indicadores visíveis para todos (mic + headset, como no Discord); volume individual por participante (aparece no hover); sons sintetizados (WebAudio) para os eventos da call.
+- **Voz**: várias salas (ex.: `akon_lonely_brega.mp3`, `Tibia`) — clique numa para entrar e permita o microfone; clicar em outra troca de sala sem sair da voz. Áudio P2P (WebRTC mesh), isolado por sala. Mutar (Ctrl+Shift+M), silenciar o canal (Ctrl+Shift+D) e push-to-talk opcional (tecla configurável no perfil) com indicadores visíveis para todos (mic + headset, como no Discord); volume individual por participante (no perfil dele); sons sintetizados (WebAudio) para os eventos da call. As salas são definidas em `VOICE_ROOMS` no [server.js](server.js).
 - **Transmitir tela**: dentro da voz, botão de monitor — o seletor do navegador oferece tela inteira, janela ou aplicativo aberto (mesmo mecanismo do Discord).
 - **Assistir**: quem transmite ganha o badge vermelho **AO VIVO** ao lado do nome no canal de voz. Clique no badge para ver a prévia (atualizada a cada 3s) e então **Assistir** — o vídeo só é enviado a quem assiste.
 - Outra pessoa na mesma rede: http://SEU_IP:3000 (mic/tela fora de localhost exigem HTTPS).
@@ -30,7 +30,13 @@ Abra http://localhost:3000, crie uma conta (usuário + senha) e entre.
 3. Em https://render.com: login com GitHub → **New → Blueprint** → escolha o repo → Apply (o [render.yaml](render.yaml) configura tudo)
 4. URL final: `https://hx-chat.onrender.com` (se o nome estiver ocupado, o Render sufixa)
 
-Limitações do plano grátis: a instância dorme após ~15min sem uso (primeiro acesso demora ~30s) e o disco é efêmero — `hx.db` zera a cada deploy/restart (contas precisam ser recriadas). Para persistir: disco pago do Render ou migrar contas para Postgres.
+Registro é **público** (qualquer um cria conta) — pensado para um grupo de amigos, sem configuração. Não depende de variáveis de ambiente.
+
+Anti-abuso embutido: limite de conexões e de tentativas de login **por IP** (sobrevive à reconexão), semáforo de scrypt (flood de login não trava o servidor), cabeçalhos CSP/HSTS/nosniff/anti-clickjacking, checagem de origem no handshake e rotação de token de sessão. Métricas de `/healthz` ficam atrás de um token (`/healthz?token=hx-metrics`); sem ele, `/healthz` devolve só `{ok:true}`.
+
+**Keep-alive / anti-hibernação:** aponte um monitor externo grátis (UptimeRobot, cron-job.org) para `https://SEU-APP.onrender.com/healthz` a cada 5 min — evita a instância dormir e avisa quando cai.
+
+Limitações do plano grátis: a instância dorme após ~15min sem uso (primeiro acesso demora ~30s) e o disco é efêmero — `hx.db` zera a cada deploy/restart (contas precisam ser recriadas). Para persistir: disco pago do Render ou migrar contas para Postgres/Turso.
 
 ## Publicar na web (túnel temporário)
 

@@ -6,10 +6,98 @@ const { Server } = require('socket.io');
 const { DatabaseSync } = require('node:sqlite');
 
 const app = express();
+app.disable('x-powered-by'); // não anunciar o stack
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, { maxHttpBufferSize: 300 * 1024 }); // thumbnails cabem, payloads gigantes não
 
+// ---------- Defesa por IP (sobrevive à reconexão: o bucket por-socket não bastava) ----------
+// IP real atrás do proxy do Render vem no x-forwarded-for.
+function clientIp(handshake) {
+  const fwd = handshake.headers['x-forwarded-for'];
+  return (fwd ? fwd.split(',')[0].trim() : handshake.address) || 'desconhecido';
+}
+
+// Folgado de propósito: amigos atrás do mesmo NAT (casa/faculdade) compartilham IP público.
+const MAX_CONN_PER_IP = 50;         // conexões simultâneas por IP: barra flood de sockets/OOM
+const connCount = new Map();        // ip -> nº de sockets abertos
+
+// Bucket de tentativas de AUTH por IP, persistente entre conexões (o de socket zerava ao reconectar).
+// Cobre register/login/resume: brute-force de senha e DoS de scrypt agora têm teto real por origem.
+const authBuckets = new Map();      // ip -> { tokens, last }
+const AUTH_MAX = 30;                // rajada de ~30 (vários amigos logando juntos após deploy)...
+const AUTH_REFILL = 0.5;            // ...e recarga de 1 a cada 2s: brute-force sustentado inviável
+function authAllow(ip) {
+  const now = Date.now();
+  const b = authBuckets.get(ip) || { tokens: AUTH_MAX, last: now };
+  b.tokens = Math.min(AUTH_MAX, b.tokens + Math.max(0, now - b.last) / 1000 * AUTH_REFILL);
+  b.last = now;
+  authBuckets.set(ip, b);
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
+}
+// Limpeza periódica dos buckets ociosos (não vazar memória com IPs que sumiram)
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, b] of authBuckets) if (now - b.last > 3600_000) authBuckets.delete(ip);
+}, 3600_000).unref();
+
+// Semáforo global de scrypt: no máx 2 hashes concorrentes. Sem isso, um flood de logins satura
+// as 4 threads do libuv e trava todo login/registro legítimo (e qualquer outro uso do threadpool).
+let scryptActive = 0;
+const scryptQueue = [];
+function scryptSlot() {
+  if (scryptActive < 2) { scryptActive++; return Promise.resolve(); }
+  return new Promise((resolve) => scryptQueue.push(resolve));
+}
+function scryptRelease() {
+  scryptActive--;
+  const next = scryptQueue.shift();
+  if (next) { scryptActive++; next(); }
+}
+
+// Handshake: bloqueia origem estranha (CSWSH) e limita conexões por IP.
+const ALLOW_ORIGIN = null; // null = aceita só a mesma origem do app (comportamento fixo)
+io.use((socket, next) => {
+  const origin = socket.handshake.headers.origin;
+  if (origin) { // requisição de browser: precisa bater com a origem do app
+    if (ALLOW_ORIGIN) {
+      if (origin !== ALLOW_ORIGIN) return next(new Error('origem não autorizada'));
+    } else { // sem env: aceita só mesma origem, comparando hostname (porta implícita 80/443 varia)
+      const host = (socket.handshake.headers.host || '').split(':')[0];
+      try { if (new URL(origin).hostname !== host) return next(new Error('origem não autorizada')); }
+      catch { return next(new Error('origem inválida')); }
+    }
+  }
+  const ip = clientIp(socket.handshake);
+  const n = connCount.get(ip) || 0;
+  if (n >= MAX_CONN_PER_IP) return next(new Error('muitas conexões'));
+  connCount.set(ip, n + 1);
+  socket.on('disconnect', () => {
+    const c = (connCount.get(ip) || 1) - 1;
+    if (c <= 0) connCount.delete(ip); else connCount.set(ip, c);
+  });
+  next();
+});
+
+// Cabeçalhos de segurança. CSP estrita é viável aqui: scripts/CSS same-origin, imagens em data:,
+// estilo só via CSSOM (não bloqueado). Com token em localStorage, CSP é o cinto contra XSS futuro.
+app.use((req, res, next) => {
+  // connect-src 'self' cobre socket.io same-origin (polling e ws/wss same-origin casam sob 'self');
+  // sem ws:/wss: amplos, um XSS não teria por onde exfiltrar para host externo
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+    "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+  res.setHeader('X-Frame-Options', 'DENY');             // sem iframe: bloqueia clickjacking
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');      // URL do servidor não vaza em links clicados
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000'); // ignorado em http local
+  next();
+});
 app.use(express.static('public'));
+
+// Registro público: qualquer um cria conta (grupo de amigos, sem convite). Anti-abuso fica por
+// conta do rate limit por IP + cap de conexões, não de um gate de acesso.
 
 // ---------- Banco: usuários com senha em hash scrypt (irreversível) ----------
 const db = new DatabaseSync(process.env.HX_DB || path.join(__dirname, 'hx.db'));
@@ -19,7 +107,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   hash TEXT NOT NULL
 )`);
 try { db.exec('ALTER TABLE users ADD COLUMN avatar TEXT'); } catch { /* coluna já existe */ }
-const insertUser = db.prepare('INSERT INTO users (username, salt, hash) VALUES (?, ?, ?)');
+try { db.exec('ALTER TABLE users ADD COLUMN created INTEGER'); } catch { /* coluna já existe */ }
+const insertUser = db.prepare('INSERT INTO users (username, salt, hash, created) VALUES (?, ?, ?, ?)');
+const getUserInfo = db.prepare('SELECT username, created FROM users WHERE username = ?');
 const getUser = db.prepare('SELECT username, salt, hash FROM users WHERE username = ?');
 const getAvatar = db.prepare('SELECT avatar FROM users WHERE username = ?');
 const setAvatar = db.prepare('UPDATE users SET avatar = ? WHERE username = ?');
@@ -33,6 +123,7 @@ const insertSession = db.prepare('INSERT INTO sessions (token, username, created
 const getSession = db.prepare('SELECT username, created FROM sessions WHERE token = ?');
 const deleteSession = db.prepare('DELETE FROM sessions WHERE token = ?');
 const renameSessions = db.prepare('UPDATE sessions SET username = ? WHERE username = ?');
+const deleteUserSessions = db.prepare('DELETE FROM sessions WHERE username = ?');
 const SESSION_MAX_AGE = 30 * 24 * 3600 * 1000;
 db.prepare('DELETE FROM sessions WHERE created < ?').run(Date.now() - SESSION_MAX_AGE);
 
@@ -78,8 +169,13 @@ const LEGACY_SCRYPT = { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 }; // h
 
 // Formato: "s2$N$r$p$<hex>". Hashes antigos são hex puro e migram no primeiro login.
 async function hashPassword(password, saltHex, opts = SCRYPT) {
-  const hex = (await scrypt(password, Buffer.from(saltHex, 'hex'), 64, opts)).toString('hex');
-  return `s2$${opts.N}$${opts.r}$${opts.p}$${hex}`;
+  await scryptSlot(); // no máx 2 scrypts concorrentes: não deixa flood de login travar o threadpool
+  try {
+    const hex = (await scrypt(password, Buffer.from(saltHex, 'hex'), 64, opts)).toString('hex');
+    return `s2$${opts.N}$${opts.r}$${opts.p}$${hex}`;
+  } finally {
+    scryptRelease();
+  }
 }
 
 function parseStored(stored) {
@@ -90,7 +186,7 @@ function parseStored(stored) {
 
 async function createUser(username, password) {
   const salt = crypto.randomBytes(16).toString('hex');
-  insertUser.run(username, salt, await hashPassword(password, salt));
+  insertUser.run(username, salt, await hashPassword(password, salt), Date.now());
 }
 
 async function checkPassword(username, password) {
@@ -111,16 +207,33 @@ async function checkPassword(username, password) {
 // ponytail: memória volátil; persistir mensagens no sqlite se precisar sobreviver a restart
 const SERVER_NAME = 'HX';
 const MAX_HISTORY = 100;
+const shareStart = new Map(); // socketId -> ts do início da transmissão (para log de duração)
+
+// Salas de voz fixas. id = chave estável do protocolo; name = rótulo exibido. O servidor é a fonte:
+// o cliente renderiza a lista que vem no ack, então adicionar/renomear sala é só mexer aqui.
+const VOICE_ROOMS = [
+  { id: 'akon', name: 'akon_lonely_brega.mp3' },
+  { id: 'tibia', name: 'Tibia' },
+];
+const VOICE_ROOM_IDS = new Set(VOICE_ROOMS.map((r) => r.id));
+
 const state = {
   users: new Map(),    // socketId -> username
   messages: db.prepare(`SELECT id, username, text, ts, img, edited FROM
     (SELECT * FROM messages ORDER BY id DESC LIMIT ${MAX_HISTORY}) ORDER BY id ASC`).all(),
-  voice: new Set(),    // socketIds no canal de voz
+  voice: new Map(),    // socketId -> roomId em que está (no máx. 1 sala por vez, como no Discord)
   muted: new Set(),    // socketIds mutados
   deafened: new Set(), // socketIds com o canal silenciado (não ouvem ninguém)
   sharing: new Set(),  // socketIds transmitindo tela
   thumbs: new Map(),   // socketId -> último thumbnail (data URL)
 };
+
+// Peers da MESMA sala (o mesh WebRTC se forma só dentro de cada sala)
+function voicePeers(room, exceptId) {
+  const out = [];
+  for (const [id, r] of state.voice) if (r === room && id !== exceptId) out.push({ id, username: state.users.get(id) });
+  return out;
+}
 
 const MAX_NAME = 32;
 const MIN_NAME = 3;
@@ -137,14 +250,26 @@ function validImage(img, max) {
   return !!m && m[1].length % 4 === 0;
 }
 
+// Allowlist de caracteres do nome: barra zero-width, homóglifos de controle, newline (impersonação
+// visual de outro membro e spoofing de log). Normaliza NFC para "á" composto e decomposto casarem.
+const NAME_RE = /^[\p{L}\p{N} _.\-]{3,32}$/u;
+function cleanName(raw) {
+  if (typeof raw !== 'string') return null;
+  const u = raw.normalize('NFC').trim();
+  if (u.length < MIN_NAME || u.length > MAX_NAME) return { error: `Usuário deve ter entre ${MIN_NAME} e ${MAX_NAME} caracteres.` };
+  if (!NAME_RE.test(u)) return { error: 'Nome só pode ter letras, números, espaço e . _ -' };
+  return { username: u };
+}
+
 function cleanCreds(payload) {
   if (!payload || typeof payload !== 'object') return null;
   const { username, password } = payload;
   if (typeof username !== 'string' || typeof password !== 'string') return null;
-  const u = username.trim();
-  if (u.length < MIN_NAME || u.length > MAX_NAME) return { error: `Usuário deve ter entre ${MIN_NAME} e ${MAX_NAME} caracteres.` };
+  const n = cleanName(username);
+  if (!n) return null;
+  if (n.error) return n;
   if (password.length < MIN_PASS || password.length > MAX_PASS) return { error: `Senha deve ter entre ${MIN_PASS} e ${MAX_PASS} caracteres.` };
-  return { username: u, password };
+  return { username: n.username, password };
 }
 
 function userList() {
@@ -161,11 +286,13 @@ const RATE_COST = {
   signal: 0.2,
   watch: 1, unwatch: 1, 'join-voice': 1, 'leave-voice': 1,
   'set-muted': 1, 'set-deafened': 1, 'screen-share': 1,
+  logout: 1, 'get-profile': 1,
 };
 const RATE_MAX = 60;
 const RATE_REFILL = 6; // tokens por segundo
 
 io.on('connection', (socket) => {
+  const ip = clientIp(socket.handshake);
   let rateTokens = RATE_MAX;
   let rateLast = Date.now();
   // Erro em um evento não pode derrubar o processo inteiro: isola cada handler
@@ -204,14 +331,21 @@ io.on('connection', (socket) => {
       old.emit('session-superseded');
       setTimeout(() => old.disconnect(true), 100); // aviso chega antes de fechar
     }
+    console.log(`[sessão] ${name}: conexão ${id} substituída por ${socket.id}`);
     state.users.delete(id);
     state.muted.delete(id);
     state.deafened.delete(id);
     if (state.sharing.delete(id)) {
       state.thumbs.delete(id);
+      const dur = Math.round((Date.now() - (shareStart.get(id) || Date.now())) / 1000);
+      shareStart.delete(id);
+      console.log(`[share] fim: ${name} após ${dur}s — motivo: sessão substituída por nova conexão da mesma conta`);
       io.to(SERVER_NAME).emit('screen-share', { id, username: name, on: false });
     }
-    if (state.voice.delete(id)) io.to(SERVER_NAME).emit('voice-user-left', { id });
+    if (state.voice.delete(id)) {
+      console.log(`[voz] saiu: ${name} — motivo: sessão substituída por nova conexão da mesma conta`);
+      io.to(SERVER_NAME).emit('voice-user-left', { id });
+    }
     io.to(SERVER_NAME).emit('user-left', { id, username: name });
   }
 
@@ -241,7 +375,8 @@ io.on('connection', (socket) => {
       messages: state.messages,
       users: userList(),
       allUsers: allUsernames.all().map((r) => r.username), // lista de membros com seção offline
-      voiceUsers: [...state.voice].map((id) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id) })),
+      voiceRooms: VOICE_ROOMS, // salas de voz disponíveis (cliente renderiza a partir daqui)
+      voiceUsers: [...state.voice].map(([id, room]) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id), room })),
       sharers: [...state.sharing].map((id) => ({ id, username: state.users.get(id), thumb: state.thumbs.get(id) || null })),
     });
     const own = getAvatar.get(username);
@@ -254,8 +389,10 @@ io.on('connection', (socket) => {
     const c = cleanCreds(payload);
     if (!c) return ack({ error: 'Preencha usuário e senha.' });
     if (c.error) return ack({ error: c.error });
-    // Duplicado responde antes de pagar o scrypt (evita queimar threadpool com nome repetido)
+    // Duplicado (barato): responde antes do scrypt e sem gastar cota — colisão de nome não tranca o IP
     if (getUser.get(c.username)) return ack({ error: 'Esse nome de usuário já existe.' });
+    // authAllow antes do scrypt: limita criação em massa de contas e DoS de hash por IP
+    if (!authAllow(ip)) return ack({ error: 'Muitas tentativas. Aguarde alguns segundos.' });
     try {
       await createUser(c.username, c.password);
     } catch (err) {
@@ -268,22 +405,44 @@ io.on('connection', (socket) => {
   on('login', async (payload, ack) => {
     if (typeof ack !== 'function') return;
     if (loggedIn()) return ack({ error: 'Você já está conectado.' });
-    const c = cleanCreds(payload);
-    if (!c || c.error) return ack({ error: 'Usuário ou senha inválidos.' });
-    const name = await checkPassword(c.username, c.password);
+    if (!authAllow(ip)) return ack({ error: 'Muitas tentativas. Aguarde alguns segundos.' });
+    // Login NÃO aplica o regex de charset (só register/rename): uma conta antiga com nome fora
+    // do allowlist ainda entra. Só normaliza e valida tamanho; o banco decide se existe.
+    const u = payload && typeof payload.username === 'string' ? payload.username.normalize('NFC').trim() : '';
+    const p = payload && typeof payload.password === 'string' ? payload.password : '';
+    if (u.length < MIN_NAME || u.length > MAX_NAME || !p) return ack({ error: 'Usuário ou senha inválidos.' });
+    const name = await checkPassword(u, p);
     if (!name) return ack({ error: 'Usuário ou senha inválidos.' });
     if (loggedIn()) return ack({ error: 'Você já está conectado.' });
+    // Login com senha revoga todos os tokens antigos: é o "desconectar outros dispositivos"
+    // e a recuperação para token roubado (o ladrão perde o acesso no próximo login legítimo)
+    deleteUserSessions.run(name);
     enterServer(name, ack);
+  });
+
+  // Perfil público de um membro (modal ao clicar no usuário)
+  on('get-profile', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
+    const name = payload && payload.username;
+    if (typeof name !== 'string' || name.length > MAX_NAME) return ack({ error: 'Usuário inválido.' });
+    const row = getUserInfo.get(name);
+    if (!row) return ack({ error: 'Usuário não encontrado.' });
+    ack({ ok: true, username: row.username, created: row.created || null });
   });
 
   // Volta direto ao servidor com o token guardado (após restart, refresh ou queda de rede)
   on('resume', (payload, ack) => {
     if (typeof ack !== 'function') return;
     if (loggedIn()) return ack({ error: 'Você já está conectado.' });
+    if (!authAllow(ip)) return ack({ error: 'Muitas tentativas. Aguarde alguns segundos.' });
     const token = payload && payload.token;
     const name = sessionUser(token);
     if (!name) return ack({ error: 'Sessão expirada.' });
-    enterServer(name, ack, token);
+    // Rotaciona: descarta o token usado e emite um novo (janela de reuso de token roubado encurta).
+    // enterServer com token=undefined gera uma sessão nova; o cliente já persiste res.token.
+    deleteSession.run(tokenHash(token));
+    enterServer(name, ack);
   });
 
   on('logout', (payload) => {
@@ -304,10 +463,10 @@ io.on('connection', (socket) => {
   on('rename', (payload, ack) => {
     if (typeof ack !== 'function') return;
     if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
-    const raw = payload && payload.username;
-    if (typeof raw !== 'string') return ack({ error: 'Nome inválido.' });
-    const name = raw.trim();
-    if (name.length < MIN_NAME || name.length > MAX_NAME) return ack({ error: `Nome deve ter entre ${MIN_NAME} e ${MAX_NAME} caracteres.` });
+    const n = cleanName(payload && payload.username);
+    if (!n) return ack({ error: 'Nome inválido.' });
+    if (n.error) return ack({ error: n.error });
+    const name = n.username;
     try {
       // 0 linhas = closure aponta para nome que não existe mais no banco (sessão dessincronizada)
       if (renameUser.run(name, username).changes === 0) return ack({ error: 'Sessão desatualizada. Recarregue a página.' });
@@ -371,16 +530,16 @@ io.on('connection', (socket) => {
     if (loggedIn()) socket.to(SERVER_NAME).volatile.emit('typing', { username });
   });
 
-  on('join-voice', (ack) => {
+  on('join-voice', (payload, ack) => {
     if (typeof ack !== 'function') return;
     if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
-    const already = state.voice.has(socket.id);
-    const peers = [...state.voice]
-      .filter((id) => id !== socket.id)
-      .map((id) => ({ id, username: state.users.get(id) }));
-    state.voice.add(socket.id);
-    ack({ peers });
-    if (!already) socket.to(SERVER_NAME).emit('voice-user-joined', { id: socket.id, username });
+    const room = payload && payload.room;
+    if (!VOICE_ROOM_IDS.has(room)) return ack({ error: 'Sala inválida.' });
+    if (state.voice.get(socket.id) === room) return ack({ peers: voicePeers(room, socket.id), room }); // já nesta sala
+    if (state.voice.has(socket.id)) leaveVoice('trocou de sala'); // sai da sala anterior antes de entrar na nova
+    state.voice.set(socket.id, room);
+    ack({ peers: voicePeers(room, socket.id), room });
+    socket.to(SERVER_NAME).emit('voice-user-joined', { id: socket.id, username, room });
   });
 
   on('set-muted', (payload) => {
@@ -399,23 +558,27 @@ io.on('connection', (socket) => {
     socket.to(SERVER_NAME).emit('user-deafened', { id: socket.id, deafened });
   });
 
-  function stopSharing() {
+  function stopSharing(reason = 'não especificado') {
     if (state.sharing.delete(socket.id)) {
       state.thumbs.delete(socket.id);
+      const dur = Math.round((Date.now() - (shareStart.get(socket.id) || Date.now())) / 1000);
+      shareStart.delete(socket.id);
+      console.log(`[share] fim: ${username} após ${dur}s — motivo: ${reason}`);
       socket.to(SERVER_NAME).emit('screen-share', { id: socket.id, username, on: false });
     }
   }
 
-  function leaveVoice() {
-    stopSharing();
+  function leaveVoice(reason = 'não especificado') {
+    stopSharing(reason);
     state.muted.delete(socket.id);
     state.deafened.delete(socket.id);
     if (state.voice.delete(socket.id)) {
+      console.log(`[voz] saiu: ${username} — motivo: ${reason}`);
       socket.to(SERVER_NAME).emit('voice-user-left', { id: socket.id });
     }
   }
 
-  on('leave-voice', leaveVoice);
+  on('leave-voice', () => leaveVoice('saiu do canal de voz (botão)'));
 
   // Relay de sinalização WebRTC: só entre membros do canal de voz.
   // Teto de 32KB: SDP real tem poucos KB; sem isso o relay vira amplificador de banda (300KB/frame)
@@ -423,7 +586,8 @@ io.on('connection', (socket) => {
     const { to, data } = payload || {};
     if (!loggedIn() || typeof to !== 'string' || !data || typeof data !== 'object') return;
     if (JSON.stringify(data).length > 32 * 1024) return;
-    if (!state.voice.has(socket.id) || !state.voice.has(to)) return;
+    const room = state.voice.get(socket.id);
+    if (!room || state.voice.get(to) !== room) return; // só relaya dentro da mesma sala
     io.to(to).emit('signal', { from: socket.id, data });
   });
 
@@ -431,10 +595,16 @@ io.on('connection', (socket) => {
     if (!loggedIn() || !state.voice.has(socket.id)) return;
     const on = !!(payload && payload.on);
     if (on) {
+      if (!state.sharing.has(socket.id)) {
+        shareStart.set(socket.id, Date.now());
+        console.log(`[share] início: ${username} (${socket.id}) — ${state.voice.size} na voz, ${state.users.size} online`);
+      }
       state.sharing.add(socket.id);
       socket.to(SERVER_NAME).emit('screen-share', { id: socket.id, username, on: true });
     } else {
-      stopSharing();
+      // Motivo vem do cliente (botão do app, navegador encerrou a captura, etc.)
+      const reason = payload && typeof payload.reason === 'string' ? payload.reason.slice(0, 120) : 'parada pelo usuário';
+      stopSharing(reason);
     }
   });
 
@@ -450,7 +620,9 @@ io.on('connection', (socket) => {
   // Espectador pede/encerra a transmissão de alguém (vídeo só vai para quem assiste)
   on('watch', (payload, ack) => {
     const to = payload && payload.to;
-    const ok = typeof to === 'string' && state.voice.has(socket.id) && state.sharing.has(to);
+    const room = state.voice.get(socket.id);
+    // Só assiste quem transmite na MESMA sala
+    const ok = typeof to === 'string' && !!room && state.voice.get(to) === room && state.sharing.has(to);
     if (ok) io.to(to).emit('watch-request', { from: socket.id });
     if (typeof ack === 'function') ack({ ok });
   });
@@ -461,16 +633,21 @@ io.on('connection', (socket) => {
     io.to(to).emit('watch-stop', { from: socket.id });
   });
 
-  on('disconnect', () => {
+  // socket.io entrega o motivo do disconnect: 'transport close' (rede/aba fechada),
+  // 'ping timeout' (cliente sumiu sem avisar), 'server namespace disconnect' (derrubado) etc.
+  on('disconnect', (reason) => {
     if (!loggedIn()) return;
-    leaveVoice();
+    leaveVoice('desconectou: ' + reason);
     // delete pode já ter acontecido via dropStale: só notifica se éramos nós que removemos
     if (state.users.delete(socket.id)) socket.to(SERVER_NAME).emit('user-left', { id: socket.id, username });
   });
 });
 
-// Health check: permite ping externo (evita hibernação em hospedagem free) e monitoramento
+// Health check: ping externo anti-hibernação vê só {ok}. Métricas (presença, memória) exigem
+// o token abaixo (/healthz?token=...) — não vazam presença nem pressão de memória a qualquer um.
+const HEALTH_TOKEN = 'hx-metrics'; // valor fixo por enquanto
 app.get('/healthz', (req, res) => {
+  if (req.query.token !== HEALTH_TOKEN) return res.json({ ok: true });
   const mb = (n) => Math.round(n / 1048576);
   res.json({
     ok: true,
@@ -499,4 +676,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { httpServer, io, state, db };
+module.exports = { httpServer, io, state, db, authBuckets, connCount };

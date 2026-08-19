@@ -11,8 +11,8 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Ícones (Feather, MIT) — monocromáticos via currentColor -->
-  <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Ícones (Feather, MIT) — monocromáticos via currentColor. Classe (não style inline): CSP bloqueia style= -->
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg">
     <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
     <symbol id="i-mic-off" viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
     <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></symbol>
@@ -63,8 +63,7 @@
         <div class="channel-label">Canais de texto</div>
         <div class="channel active"># geral</div>
         <div class="channel-label">Canais de voz</div>
-        <div class="channel" id="voice-channel"><svg class="icon"><use href="#i-volume"/></svg> Voz</div>
-        <ul id="voice-users" class="voice-users"></ul>
+        <div id="voice-rooms"></div>
       </div>
       <div class="voice-controls hidden" id="voice-controls">
         <button id="mute-btn" title="Mutar / Desmutar microfone" aria-pressed="false"><svg class="icon"><use id="mute-icon" href="#i-mic"/></svg></button>
@@ -105,6 +104,25 @@
       <div id="preview-empty" class="hidden">Aguardando prévia…</div>
       <div id="preview-title"></div>
       <button id="preview-watch"></button>
+    </div>
+  </div>
+
+  <!-- Perfil de um membro (clique no participante da call) -->
+  <div id="user-overlay" class="hidden">
+    <div id="user-card">
+      <button id="user-close" title="Fechar"><svg class="icon"><use href="#i-x"/></svg></button>
+      <header class="profile-header">
+        <span id="user-card-avatar"></span>
+        <div class="profile-id">
+          <div id="user-card-name"></div>
+          <div class="profile-sub" id="user-card-since"></div>
+        </div>
+      </header>
+      <section class="profile-section" id="user-volume-section">
+        <div class="section-label">Volume na chamada</div>
+        <input id="user-volume" type="range" min="0" max="100" class="vol-range">
+        <div class="section-hint">Só muda o que você ouve; a pessoa não é afetada.</div>
+      </section>
     </div>
   </div>
 

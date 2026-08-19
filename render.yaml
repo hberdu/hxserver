@@ -5,3 +5,4 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /healthz   # Render só roteia tráfego com o processo de pé

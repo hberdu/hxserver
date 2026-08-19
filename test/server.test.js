@@ -3,7 +3,7 @@ process.env.HX_DB = ':memory:'; // antes do require: DB de teste isolado
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const { io: Client } = require('socket.io-client');
-const { httpServer, state, db } = require('../server.js');
+const { httpServer, state, db, authBuckets } = require('../server.js');
 
 let url;
 const clients = [];
@@ -28,6 +28,7 @@ beforeEach(() => {
   state.sharing.clear();
   state.thumbs.clear();
   db.exec('DELETE FROM users'); db.exec('DELETE FROM sessions'); db.exec('DELETE FROM messages');
+  authBuckets.clear(); // não deixar o rate limit de auth por IP vazar entre testes
 });
 
 function connect() {
@@ -51,8 +52,8 @@ function once(client, event) {
   return new Promise((resolve) => client.once(event, resolve));
 }
 
-function joinVoice(client) {
-  return new Promise((resolve) => client.emit('join-voice', resolve));
+function joinVoice(client, room = 'akon') {
+  return new Promise((resolve) => client.emit('join-voice', { room }, resolve));
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -239,7 +240,15 @@ test('sessão: token do login permite voltar sem senha e sobrevive a "restart"',
   const res = await emitAck(b, 'resume', { token: reg.token });
   assert.equal(res.ok, true);
   assert.equal(res.username, 'ana');
-  assert.equal(res.token, reg.token, 'token continua o mesmo');
+  assert.match(res.token, /^[0-9a-f]{64}$/, 'resume entrega um token');
+  assert.notEqual(res.token, reg.token, 'token é rotacionado no resume');
+  b.disconnect();
+
+  // token antigo não vale mais depois de rotacionado; o novo vale
+  const b2 = await connect();
+  assert.ok((await emitAck(b2, 'resume', { token: reg.token })).error, 'token antigo revogado após rotação');
+  const b3 = await connect();
+  assert.equal((await emitAck(b3, 'resume', { token: res.token })).ok, true, 'token rotacionado funciona');
 
   const c = await connect();
   assert.ok((await emitAck(c, 'resume', { token: 'x'.repeat(64) })).error, 'token inválido');
@@ -272,6 +281,61 @@ test('rename mantém a sessão válida', async () => {
   const b = await connect();
   const res = await emitAck(b, 'resume', { token: reg.token });
   assert.equal(res.username, 'anastacia');
+});
+
+test('login com senha revoga os tokens antigos (desconectar outros dispositivos)', async () => {
+  const a = await connect();
+  const reg = await emitAck(a, 'register', { username: 'ana', password: 'senha123' });
+  a.disconnect();
+  await sleep(80);
+
+  const b = await connect();
+  assert.equal((await emitAck(b, 'login', { username: 'ana', password: 'senha123' })).ok, true);
+  b.disconnect();
+  await sleep(80);
+
+  const c = await connect();
+  assert.ok((await emitAck(c, 'resume', { token: reg.token })).error, 'token antigo morreu no login com senha');
+});
+
+test('rate limit de auth por IP sobrevive à reconexão (fura o bucket por-socket)', async () => {
+  // Reconecta a cada tentativa: cada socket novo tem bucket próprio zerado, então só o limite
+  // POR IP (que persiste) pode travar. É exatamente o exploit que o bucket por-socket não pegava.
+  let blocked = false;
+  for (let i = 0; i < 40 && !blocked; i++) {
+    const c = await connect();
+    const r = await emitAck(c, 'login', { username: 'ninguem' + i, password: 'senha123' });
+    if (/Muitas tentativas/.test(r.error || '')) blocked = true; // mensagem específica do authAllow
+    c.disconnect();
+  }
+  assert.ok(blocked, 'o limite por IP deveria travar mesmo reconectando a cada tentativa');
+});
+
+test('charset do nome: register rejeita caractere inválido; nome limpo passa', async () => {
+  const a = await connect();
+  assert.ok((await emitAck(a, 'register', { username: 'a​na', password: 'senha123' })).error, 'zero-width barrado');
+  assert.ok((await emitAck(a, 'register', { username: 'ana\nx', password: 'senha123' })).error, 'newline barrado');
+  assert.equal((await emitAck(a, 'register', { username: 'joão_2', password: 'senha123' })).ok, true, 'acento/underscore ok');
+});
+
+test('get-profile: devolve data de cadastro; exige login; nome inexistente falha', async () => {
+  const a = await loggedClient('ana');
+  const semLogin = await connect();
+  assert.ok((await emitAck(semLogin, 'get-profile', { username: 'ana' })).error, 'sem login falha');
+  assert.ok((await emitAck(a, 'get-profile', { username: 'ninguem' })).error, 'inexistente falha');
+
+  const res = await emitAck(a, 'get-profile', { username: 'ana' });
+  assert.equal(res.ok, true);
+  assert.equal(res.username, 'ana');
+  assert.ok(Number.isInteger(res.created) && res.created > 0, 'created veio do registro');
+});
+
+test('headers de segurança presentes nas respostas HTTP', async () => {
+  const res = await fetch(url + '/healthz');
+  assert.ok(res.headers.get('content-security-policy').includes("default-src 'self'"));
+  assert.equal(res.headers.get('x-frame-options'), 'DENY');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
 });
 
 test('erro em um handler não derruba o servidor', async () => {
@@ -482,6 +546,39 @@ test('join-voice idempotente: sem self nos peers, sem re-broadcast; sem login re
 
   const semLogin = await connect();
   assert.ok((await joinVoice(semLogin)).error);
+});
+
+test('salas de voz: peers e sinalização isolados por sala; sala inválida recusada', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  const c = await loggedClient('carla');
+
+  assert.ok((await joinVoice(a, 'inexistente')).error, 'sala inválida recusada');
+
+  const ra = await joinVoice(a, 'akon');
+  const rb = await joinVoice(b, 'tibia');
+  assert.deepEqual(ra.peers, [], 'akon vazia para ana');
+  assert.deepEqual(rb.peers, [], 'beto não vê ana (outra sala)');
+
+  const rc = await joinVoice(c, 'akon');
+  assert.equal(rc.peers.length, 1, 'carla vê só ana na akon');
+  assert.equal(rc.peers[0].id, a.id);
+
+  // sinal entre salas diferentes é bloqueado; dentro da mesma sala passa
+  let leaked = false;
+  b.on('signal', () => { leaked = true; });
+  a.emit('signal', { to: b.id, data: { description: { type: 'offer', sdp: 'x' } } });
+  const gotC = once(c, 'signal');
+  a.emit('signal', { to: c.id, data: { description: { type: 'offer', sdp: 'y' } } });
+  assert.equal((await gotC).from, a.id, 'sinal na mesma sala passa');
+  await sleep(80);
+  assert.equal(leaked, false, 'sinal para outra sala é bloqueado');
+
+  // trocar de sala: ana vai para tibia, sai da akon
+  const left = once(c, 'voice-user-left');
+  const moved = await joinVoice(a, 'tibia');
+  assert.equal((await left).id, a.id, 'quem ficou na akon vê ana sair');
+  assert.ok(moved.peers.some((p) => p.id === b.id), 'ana agora vê beto na tibia');
 });
 
 test('sinalização: relay só entre membros do canal de voz', async () => {

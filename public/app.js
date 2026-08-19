@@ -167,7 +167,8 @@ socket.on('connect', () => {
   socket.emit('resume', { token }, (res) => {
     if (!res || res.error) { localStorage.removeItem('hx-token'); return; }
     enterApp(res);
-    if (sessionStorage.getItem('hx-in-voice') === '1') joinVoice(); // estava em call antes da queda
+    const room = sessionStorage.getItem('hx-voice-room');
+    if (room) joinVoice(room); // estava numa sala de voz antes da queda: volta pra mesma
   });
 });
 
@@ -179,7 +180,7 @@ function enterApp(res) {
   lastAuthor = null;
   $('messages').replaceChildren();
   $('user-list').replaceChildren();
-  $('voice-users').replaceChildren();
+  renderVoiceRooms(res.voiceRooms || []);
   sharers.clear();
   Object.entries(res.avatars || {}).forEach(([n, img]) => avatares.set(n, img));
   $('login-screen').classList.add('hidden');
@@ -192,7 +193,7 @@ function enterApp(res) {
   (res.allUsers || []).forEach((n) => allNames.add(n));
   res.users.forEach((user) => addUser(user.id, user.username));
   renderOffline();
-  res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted, user.deafened));
+  res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted, user.deafened, user.room));
   res.sharers.forEach((s) => {
     sharers.set(s.id, { username: s.username, thumb: s.thumb });
     updateBadge(s.id, true);
@@ -555,15 +556,43 @@ socket.on('user-left', ({ id, username: name }) => {
 
 // ---------- Canal de voz (UI) ----------
 let inVoice = false;
+let currentRoom = null;   // id da sala de voz atual (null = fora da voz)
+let voiceRooms = [];      // [{id, name}] recebidas do servidor
 let localStream = null;   // microfone
 let screenStream = null;  // tela
+
+// Renderiza as salas de voz (fonte é o servidor): cada sala é um canal clicável + lista de gente
+function renderVoiceRooms(rooms) {
+  voiceRooms = rooms;
+  const box = $('voice-rooms');
+  box.replaceChildren();
+  rooms.forEach((room) => {
+    const ch = document.createElement('div');
+    ch.className = 'channel';
+    ch.id = 'voice-room-' + room.id;
+    ch.innerHTML = '<svg class="icon"><use href="#i-volume"/></svg>';
+    ch.append(' ' + room.name);
+    ch.title = 'Entrar em ' + room.name;
+    ch.onclick = () => joinVoice(room.id);
+    const ul = document.createElement('ul');
+    ul.className = 'voice-users';
+    ul.id = 'voice-users-' + room.id;
+    box.append(ch, ul);
+  });
+}
+
+function voiceRoomName(id) {
+  return (voiceRooms.find((r) => r.id === id) || {}).name || id;
+}
 const peers = new Map();         // peerId -> { pc, makingOffer, ignoreOffer, polite }
 const sharers = new Map();       // sharerId -> { username, thumb }
 const watching = new Set();      // sharerIds que estou assistindo
 const viewerSenders = new Map(); // viewerId -> RTCRtpSender do meu vídeo de tela
 
-function addVoiceUser(id, name, muted = false, deafened = false) {
-  if (document.getElementById('voice-user-' + id)) return;
+function addVoiceUser(id, name, muted = false, deafened = false, room = currentRoom) {
+  const ul = document.getElementById('voice-users-' + room);
+  if (!ul) return; // sala desconhecida
+  document.getElementById('voice-user-' + id)?.remove(); // pode estar noutra sala: recoloca
   const li = document.createElement('li');
   li.id = 'voice-user-' + id;
   const span = document.createElement('span');
@@ -578,25 +607,12 @@ function addVoiceUser(id, name, muted = false, deafened = false) {
   deafInd.title = 'Silenciado';
   deafInd.innerHTML = '<svg class="icon"><use href="#i-headset-off"/></svg>';
   li.append(avatarEl(name, 24), span, muteInd, deafInd);
-  if (id !== selfId) {
-    // Volume individual (aparece no hover): lembrado por nome entre calls
-    const vol = document.createElement('input');
-    vol.type = 'range';
-    vol.min = 0;
-    vol.max = 100;
-    vol.className = 'vol-slider';
-    vol.value = localStorage.getItem('hx-vol-' + name) ?? 100;
-    vol.title = 'Volume de ' + name;
-    vol.oninput = () => {
-      const a = document.getElementById('audio-' + id);
-      if (a) a.volume = vol.value / 100;
-      localStorage.setItem('hx-vol-' + name, vol.value);
-    };
-    li.appendChild(vol);
-  }
+  li.title = 'Ver perfil';
+  // Perfil do participante (foto, membro desde, volume) — nome lido do DOM: sobrevive a rename
+  li.onclick = () => openUserProfile(id, li.querySelector('.name').textContent);
   li.classList.toggle('muted', muted);
   li.classList.toggle('deafened', deafened);
-  $('voice-users').appendChild(li);
+  ul.appendChild(li);
   if (sharers.has(id)) updateBadge(id, true);
 }
 
@@ -622,7 +638,6 @@ function voiceUserName(id) {
     || sharers.get(id)?.username || 'Tela';
 }
 
-$('voice-channel').onclick = joinVoice;
 $('leave-voice-btn').onclick = leaveVoice;
 $('mute-btn').onclick = toggleMute;
 $('deafen-btn').onclick = toggleDeafen;
@@ -652,6 +667,7 @@ $('ptt-key').onkeydown = (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     $('profile-overlay').classList.add('hidden');
+    closeUserProfile();
     closePreview();
   } else if (e.ctrlKey && e.shiftKey && e.code === 'KeyM') {
     e.preventDefault();
@@ -682,42 +698,69 @@ document.querySelector('.content').addEventListener('click', () => {
   document.querySelector('.sidebar').classList.remove('open');
 });
 
-async function joinVoice() {
-  if (inVoice) return;
-  inVoice = true; // antes do await: bloqueia duplo clique durante o prompt do microfone
+let joiningVoice = false;
+
+async function joinVoice(room) {
+  if (!room || room === currentRoom || joiningVoice) return; // já nesta sala ou entrando
+  joiningVoice = true;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
+    if (!localStream) { // pede o mic só na primeira entrada; trocar de sala reaproveita
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
+    }
   } catch (err) {
-    inVoice = false;
+    joiningVoice = false;
     systemMessage('Sem acesso ao microfone: ' + err.message);
     return;
   }
-  socket.emit('join-voice', (res) => {
+  socket.emit('join-voice', { room }, (res) => {
+    joiningVoice = false;
     if (!res || res.error) {
-      inVoice = false;
-      localStream?.getTracks().forEach((t) => t.stop());
-      localStream = null;
+      if (!currentRoom) { localStream?.getTracks().forEach((t) => t.stop()); localStream = null; }
+      // Sala não existe mais (ex.: removida do servidor): não insistir no auto-rejoin ao recarregar
+      if (/inválida/i.test((res && res.error) || '')) sessionStorage.removeItem('hx-voice-room');
       systemMessage((res && res.error) || 'Falha ao entrar no canal de voz.');
       return;
     }
+    // Só derruba o mesh antigo depois do ack: erro na troca não deixa a call em limbo
+    if (currentRoom && currentRoom !== res.room) teardownVoiceMesh();
+    inVoice = true;
+    currentRoom = res.room;
+    setActiveRoom(res.room);
     $('voice-controls').classList.remove('hidden');
-    addVoiceUser(selfId, username);
+    addVoiceUser(selfId, username, false, false, res.room);
     if (pttOn) setMuted(true, false); // push-to-talk: entra mutado esperando a tecla
-    attachSpeaking(selfId, localStream);
+    if (!meters.has(selfId)) attachSpeaking(selfId, localStream);
     playSound('userJoin'); // toca também para quem entrou, não só para quem já estava
-    sessionStorage.setItem('hx-in-voice', '1'); // volta pra call sozinho se cair
-    // Novato inicia a conexão com cada participante já presente
+    sessionStorage.setItem('hx-voice-room', res.room); // volta pra mesma sala sozinho se cair
+    // Novato inicia a conexão com cada participante já presente na sala
     res.peers.forEach(({ id }) => getPeer(id));
     if (previewId) updatePreview();
   });
 }
 
+function setActiveRoom(room) {
+  document.querySelectorAll('#voice-rooms .channel').forEach((c) => c.classList.remove('active'));
+  document.getElementById('voice-room-' + room)?.classList.add('active');
+}
+
+// Troca de sala: fecha as conexões da sala atual mas preserva o microfone e a UI de controles
+function teardownVoiceMesh() {
+  if (screenStream) stopScreen(false, 'trocou de sala de voz');
+  watching.forEach((id) => removeScreenTile(id));
+  watching.clear();
+  viewerSenders.clear();
+  peers.forEach((_, id) => removePeer(id));
+  removeVoiceUser(selfId); // sai da lista da sala antiga (o servidor troca sozinho no join)
+}
+
 function leaveVoice() {
   if (!inVoice) return;
   inVoice = false;
-  sessionStorage.removeItem('hx-in-voice');
+  currentRoom = null;
+  setActiveRoom(null);
+  sessionStorage.removeItem('hx-voice-room');
+  if (screenStream) stopScreen(false, 'saiu do canal de voz');
   socket.emit('leave-voice');
-  if (screenStream) stopScreen(false);
   watching.forEach((id) => removeScreenTile(id));
   watching.clear();
   viewerSenders.clear();
@@ -775,14 +818,15 @@ function toggleDeafen() {
   playSound(deafened ? 'mute' : 'unmute');
 }
 
-socket.on('voice-user-joined', ({ id, username: name }) => {
-  addVoiceUser(id, name);
-  systemMessage(name + ' entrou no canal de voz');
-  if (inVoice) playSound('userJoin'); // alerta de entrada, como no Discord
+socket.on('voice-user-joined', ({ id, username: name, room }) => {
+  addVoiceUser(id, name, false, false, room);
+  systemMessage(name + ' entrou em ' + voiceRoomName(room));
+  if (inVoice && room === currentRoom) playSound('userJoin'); // só alerta se for na minha sala
   // Conexão criada sob demanda quando a oferta do novato chegar
 });
 
 socket.on('voice-user-left', ({ id }) => {
+  if (id === selfId) { leaveVoice(); return; } // sessão substituída em outra aba: limpa meu estado
   removeVoiceUser(id);
   removePeer(id);
   sharerGone(id);
@@ -996,7 +1040,7 @@ let thumbTimer = null;
 
 async function toggleScreen() {
   if (screenPending) return;
-  if (screenStream) { stopScreen(); return; }
+  if (screenStream) { stopScreen(true, 'botão parar do app'); return; }
   screenPending = true;
   let stream;
   try {
@@ -1014,7 +1058,7 @@ async function toggleScreen() {
   screenStream = stream;
   const track = screenStream.getVideoTracks()[0];
   track.contentHint = 'motion'; // prioriza fluidez (jogos); encoder mantém frame rate
-  track.onended = () => stopScreen(); // botão "parar compartilhamento" do navegador
+  track.onended = () => stopScreen(true, 'captura encerrada pelo navegador ou sistema'); // barra "parar compartilhamento", janela fechada
   addScreenTile(selfId, screenStream, true);
   socket.emit('screen-share', { on: true });
   updateBadge(selfId, true);
@@ -1024,7 +1068,7 @@ async function toggleScreen() {
   setTimeout(sendThumb, 600); // primeira prévia rápida
 }
 
-function stopScreen(sound = true) {
+function stopScreen(sound = true, reason = 'não especificado') {
   if (!screenStream) return;
   clearInterval(thumbTimer);
   thumbTimer = null;
@@ -1033,7 +1077,7 @@ function stopScreen(sound = true) {
   screenStream.getTracks().forEach((t) => t.stop());
   screenStream = null;
   removeScreenTile(selfId);
-  socket.emit('screen-share', { on: false });
+  socket.emit('screen-share', { on: false, reason }); // motivo vai para o log do servidor
   updateBadge(selfId, false);
   $('screen-btn').classList.remove('active');
   if (sound) playSound('screenOff');
@@ -1138,7 +1182,7 @@ function updateBadge(id, on) {
     badge.className = 'live-badge';
     badge.textContent = 'AO VIVO';
     badge.title = 'Ver prévia da transmissão';
-    badge.onclick = () => openPreview(id);
+    badge.onclick = (e) => { e.stopPropagation(); openPreview(id); }; // não abrir o perfil junto
     li.appendChild(badge);
   } else if (!on && badge) {
     badge.remove();
@@ -1245,15 +1289,11 @@ function applyRename(id, oldName, newName) {
   if (voiceLi) {
     voiceLi.querySelector('.name').textContent = newName;
     voiceLi.querySelector('.avatar').replaceWith(avatarEl(newName, 24));
-    const vol = voiceLi.querySelector('.vol-slider');
-    if (vol) {
-      vol.title = 'Volume de ' + newName;
-      const saved = localStorage.getItem('hx-vol-' + oldName);
-      if (saved !== null) {
-        localStorage.setItem('hx-vol-' + newName, saved); // ajuste sobrevive ao rename
-        localStorage.removeItem('hx-vol-' + oldName);
-      }
-    }
+  }
+  const savedVol = localStorage.getItem('hx-vol-' + oldName);
+  if (savedVol !== null) {
+    localStorage.setItem('hx-vol-' + newName, savedVol); // ajuste de volume sobrevive ao rename
+    localStorage.removeItem('hx-vol-' + oldName);
   }
   const sharer = sharers.get(id);
   if (sharer) sharer.username = newName;
@@ -1320,6 +1360,44 @@ $('avatar-file').onchange = async () => {
   });
 };
 
+// ---------- Perfil de um membro (clique no participante da call) ----------
+let userCardFor = null; // evita resposta atrasada sobrescrever outro perfil aberto
+
+function openUserProfile(id, name) {
+  userCardFor = name;
+  $('user-card-avatar').replaceChildren(avatarEl(name, 80));
+  $('user-card-name').textContent = name;
+  $('user-card-since').textContent = 'Servidor HX';
+  socket.emit('get-profile', { username: name }, (res) => {
+    if (userCardFor !== name) return;
+    if (res && res.ok && res.created) {
+      $('user-card-since').textContent = 'Membro desde ' +
+        new Date(res.created).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+    }
+  });
+  const isOther = id !== selfId;
+  $('user-volume-section').classList.toggle('hidden', !isOther);
+  if (isOther) {
+    const vol = $('user-volume');
+    vol.value = localStorage.getItem('hx-vol-' + name) ?? 100;
+    vol.oninput = () => {
+      const a = document.getElementById('audio-' + id);
+      if (a) a.volume = vol.value / 100;
+      // Lê o nome atual do DOM: se a pessoa renomear com o modal aberto, salva na chave certa
+      localStorage.setItem('hx-vol-' + voiceUserName(id), vol.value);
+    };
+  }
+  $('user-overlay').classList.remove('hidden');
+}
+
+function closeUserProfile() {
+  userCardFor = null;
+  $('user-overlay').classList.add('hidden');
+}
+
+$('user-close').onclick = closeUserProfile;
+$('user-overlay').onclick = (e) => { if (e.target === $('user-overlay')) closeUserProfile(); };
+
 function toggleWatch(id) {
   if (!inVoice) { systemMessage('Entre no canal de voz para assistir.'); return; }
   if (watching.has(id)) {
@@ -1368,6 +1446,8 @@ function addScreenTile(id, stream, muted = false) {
   tile.addEventListener('wheel', (e) => {
     e.preventDefault();
     setWidth(width + (e.deltaY < 0 ? 60 : -60));
+    // Ampliada ao tamanho máximo: essa live assume o primeiro lugar do grid
+    if (width >= 1400 && tile.previousElementSibling) $('screens').prepend(tile);
   }, { passive: false });
 
   const video = document.createElement('video');
