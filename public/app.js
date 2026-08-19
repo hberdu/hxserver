@@ -263,7 +263,7 @@ const SERVER_LOGOS = {
 };
 
 // Fotos de servidor (arquivos em public/icons/). Sem o arquivo, cai nas iniciais.
-const SERVER_PHOTOS = { panteras: 'icons/panteras.png', serverb: 'icons/lady-club.png' };
+const SERVER_PHOTOS = { panteras: 'icons/panther.png', serverb: 'icons/castle.png' };
 
 function renderServerRail(servers, active) {
   serverList = servers;

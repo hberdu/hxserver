@@ -2,7 +2,14 @@ services:
   - type: web
     name: hx-chat
     runtime: node
-    plan: free
+    plan: starter            # plano pago (mínimo que suporta disco). Ajuste se o seu for maior.
     buildCommand: npm install
     startCommand: npm start
-    healthCheckPath: /healthz   # Render só roteia tráfego com o processo de pé
+    healthCheckPath: /healthz
+    envVars:
+      - key: HX_DB
+        value: /data/hx.db   # banco no disco persistente: sobrevive a deploys/restarts
+    disk:
+      name: hx-data
+      mountPath: /data
+      sizeGB: 1
