@@ -286,7 +286,7 @@ const RATE_COST = {
   signal: 0.2,
   watch: 1, unwatch: 1, 'join-voice': 1, 'leave-voice': 1,
   'set-muted': 1, 'set-deafened': 1, 'screen-share': 1,
-  logout: 1, 'get-profile': 1,
+  logout: 1, 'get-profile': 1, 'ping-hx': 0.5, // ping legítimo é 1 a cada 5s: folga enorme
 };
 const RATE_MAX = 60;
 const RATE_REFILL = 6; // tokens por segundo
@@ -529,6 +529,9 @@ io.on('connection', (socket) => {
   on('typing', () => {
     if (loggedIn()) socket.to(SERVER_NAME).volatile.emit('typing', { username });
   });
+
+  // Medição de latência: só devolve o ack para o cliente cronometrar o round-trip (custo ~0)
+  on('ping-hx', (ack) => { if (typeof ack === 'function') ack(); });
 
   on('join-voice', (payload, ack) => {
     if (typeof ack !== 'function') return;

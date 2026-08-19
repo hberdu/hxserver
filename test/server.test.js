@@ -483,6 +483,15 @@ test('typing: retransmite para os outros, não para quem digita nem sem login', 
   assert.equal(leaked, false);
 });
 
+test('ping-hx: servidor devolve o ack para o cliente medir a latência', async () => {
+  const a = await loggedClient('ana');
+  const acked = await new Promise((resolve) => {
+    const t0 = Date.now();
+    a.emit('ping-hx', () => resolve(Date.now() - t0));
+  });
+  assert.ok(acked >= 0 && acked < 4000, 'ack voltou dentro de um tempo razoável');
+});
+
 test('anti-flood: rajada de chat esbarra no limite; eventos seguem funcionando depois', async () => {
   const a = await loggedClient('ana');
   const b = await loggedClient('beto');

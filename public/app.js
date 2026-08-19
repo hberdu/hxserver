@@ -200,6 +200,7 @@ function enterApp(res) {
   });
   scrollMessages();
   $('chat-input').focus();
+  renderNetStatus();
 }
 
 function auth(event) {
@@ -735,6 +736,7 @@ async function joinVoice(room) {
     // Novato inicia a conexão com cada participante já presente na sala
     res.peers.forEach(({ id }) => getPeer(id));
     if (previewId) updatePreview();
+    renderNetStatus();
   });
 }
 
@@ -779,6 +781,7 @@ function leaveVoice() {
   $('deafen-icon').setAttribute('href', '#i-headset');
   playSound('leave');
   if (previewId) updatePreview();
+  renderNetStatus();
 }
 
 let deafened = false;
@@ -809,6 +812,10 @@ function toggleDeafen() {
   deafened = !deafened;
   if (deafened) mutedBeforeDeafen = !(localStream?.getAudioTracks()[0]?.enabled ?? true);
   document.querySelectorAll('audio[id^="audio-"]').forEach((a) => { a.muted = deafened; });
+  // Silenciado também cala o áudio das lives dos outros (mas nunca a própria tela)
+  document.querySelectorAll('.screen-tile video').forEach((v) => {
+    if (v.closest('.screen-tile')?.id !== 'screen-' + selfId) v.muted = deafened;
+  });
   $('deafen-btn').classList.toggle('active', deafened);
   $('deafen-btn').setAttribute('aria-pressed', deafened);
   $('deafen-icon').setAttribute('href', deafened ? '#i-headset-off' : '#i-headset');
@@ -832,6 +839,43 @@ socket.on('voice-user-left', ({ id }) => {
   sharerGone(id);
   if (inVoice) playSound('userLeave');
 });
+
+// ---------- Qualidade de rede (ping) + indicador de servidor/canal ----------
+let pingMs = null;
+
+function renderNetStatus() {
+  const sig = $('net-signal');
+  if (!sig) return;
+  sig.classList.remove('good', 'ok', 'bad');
+  if (!socket.connected) sig.title = 'Sem conexão com o servidor HX';
+  else if (pingMs == null) sig.title = 'Medindo latência com o servidor HX…';
+  else {
+    sig.classList.add(pingMs < 100 ? 'good' : pingMs < 250 ? 'ok' : 'bad');
+    sig.title = pingMs + ' ms — latência da sua rede com o servidor HX';
+  }
+  const sharing = !!screenStream;
+  const line1 = $('net-line1');
+  line1.textContent = !socket.connected ? 'Reconectando…'
+    : sharing ? 'Transmitindo tela'
+    : inVoice ? 'Voz conectada'
+    : 'Online';
+  line1.classList.toggle('voice', socket.connected && (inVoice || sharing));
+  $('net-line2').textContent = 'HX · ' + (inVoice && currentRoom ? voiceRoomName(currentRoom) : '# geral');
+}
+
+function measurePing() {
+  if (!socket.connected) { pingMs = null; renderNetStatus(); return; }
+  const t0 = performance.now();
+  try {
+    socket.timeout(4000).emit('ping-hx', (err) => {
+      pingMs = err ? null : Math.round(performance.now() - t0);
+      renderNetStatus();
+    });
+  } catch { /* cliente sem socket.timeout: sem medição, indicador fica neutro */ }
+}
+setInterval(measurePing, 5000);
+socket.on('connect', () => { measurePing(); renderNetStatus(); });
+socket.on('disconnect', () => { pingMs = null; renderNetStatus(); });
 
 // ---------- Tratamento do microfone (redução de ruído estilo Discord) ----------
 let noiseSuppression = localStorage.getItem('hx-noise') !== 'off';
@@ -930,7 +974,8 @@ function getPeer(peerId) {
     ignoreOffer: false,
     settingRemoteAnswer: false, // negociação perfeita canônica: sem isto, offer legítima vira "colisão"
     polite: selfId < peerId,
-    screenSender: null,         // sender de tela reutilizado via replaceTrack (m-lines não crescem)
+    screenSender: null,         // sender de vídeo da tela, reutilizado via replaceTrack (m-lines não crescem)
+    screenAudioSender: null,    // sender de áudio da tela (se o transmissor compartilhou som)
     restarts: 0,                // limite de ICE restart: só STUN, par inalcançável não loopa para sempre
   };
   peers.set(peerId, state);
@@ -954,22 +999,30 @@ function getPeer(peerId) {
     if (candidate) socket.emit('signal', { to: peerId, data: { candidate } });
   };
 
-  pc.ontrack = ({ track }) => {
-    if (track.kind === 'audio') {
-      const stream = new MediaStream([track]);
+  pc.ontrack = ({ track, streams }) => {
+    // A tela é enviada com vídeo + áudio no MESMO stream (screenStream). O mic vai num stream só-áudio.
+    // Ordem determinística: mic entra no pc na criação (m-line 0); no watch adiciono vídeo ANTES do
+    // áudio numa única renegociação, então o navegador entrega ontrack em ordem de m-line
+    // (mic → vídeo → áudio-da-tela). Quando o áudio da tela chega, o stream já tem o vídeo.
+    const stream = streams[0] || new MediaStream([track]);
+    const isScreen = stream.getVideoTracks().length > 0;
+    if (track.kind === 'video') {
+      if (!watching.has(peerId)) return; // unwatch venceu a corrida com a renegociação
+      addScreenTile(peerId, stream); // stream com vídeo E áudio da live: o som toca no próprio <video>
+      track.onended = () => removeScreenTile(peerId);
+      // sem onmute: mute é transitório (janela minimizada, rede) — fim real chega via evento 'screen-share'
+    } else if (isScreen) {
+      // áudio da live: já vem no mesmo stream do vídeo, tocando no <video> do tile — nada a fazer
+    } else {
+      const micStream = new MediaStream([track]);
       const audio = new Audio();
-      audio.srcObject = stream;
+      audio.srcObject = micStream;
       audio.autoplay = true;
       audio.muted = deafened; // quem chega durante o modo silenciado também fica mudo
       audio.volume = (localStorage.getItem('hx-vol-' + voiceUserName(peerId)) ?? 100) / 100;
       audio.id = 'audio-' + peerId;
       document.body.appendChild(audio);
-      attachSpeaking(peerId, stream);
-    } else {
-      if (!watching.has(peerId)) return; // unwatch venceu a corrida com a renegociação
-      addScreenTile(peerId, new MediaStream([track]));
-      track.onended = () => removeScreenTile(peerId);
-      // sem onmute: mute é transitório (janela minimizada, rede) — fim real chega via evento 'screen-share'
+      attachSpeaking(peerId, micStream);
     }
   };
 
@@ -1048,6 +1101,7 @@ async function toggleScreen() {
     // 1080p60: nítido e fluido sem afogar encoder/rede (4K travava; WebRTC ainda adapta se faltar banda)
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, // som da aba/jogo, sem processar
       surfaceSwitching: 'include',    // trocar de janela sem parar a live
       selfBrowserSurface: 'exclude',  // evita efeito túnel capturando a própria aba
       monitorTypeSurfaces: 'include',
@@ -1064,6 +1118,7 @@ async function toggleScreen() {
   updateBadge(selfId, true);
   $('screen-btn').classList.add('active');
   playSound('screenOn');
+  renderNetStatus();
   thumbTimer = setInterval(sendThumb, 3000);
   setTimeout(sendThumb, 600); // primeira prévia rápida
 }
@@ -1072,12 +1127,16 @@ function stopScreen(sound = true, reason = 'não especificado') {
   if (!screenStream) return;
   clearInterval(thumbTimer);
   thumbTimer = null;
-  viewerSenders.forEach((sender) => sender.replaceTrack(null).catch(() => {}));
+  peers.forEach((p) => {
+    p.screenSender?.replaceTrack(null).catch(() => {});
+    p.screenAudioSender?.replaceTrack(null).catch(() => {});
+  });
   viewerSenders.clear();
   screenStream.getTracks().forEach((t) => t.stop());
   screenStream = null;
   removeScreenTile(selfId);
   socket.emit('screen-share', { on: false, reason }); // motivo vai para o log do servidor
+  renderNetStatus();
   updateBadge(selfId, false);
   $('screen-btn').classList.remove('active');
   if (sound) playSound('screenOff');
@@ -1124,23 +1183,28 @@ socket.on('watch-request', ({ from } = {}) => {
   // getPeer (não peers.get): logo após reload do espectador o pc dele pode ainda não existir
   // aqui — descartaria o pedido e ele ficaria em "Parar de assistir" sem vídeo nunca chegar
   const peer = getPeer(from);
-  const track = screenStream.getVideoTracks()[0];
+  const vTrack = screenStream.getVideoTracks()[0];
+  const aTrack = screenStream.getAudioTracks()[0]; // pode não existir (usuário não marcou "compartilhar áudio")
+  // Vídeo primeiro (ordem importa: define qual m-line é a tela no lado do espectador)
   if (peer.screenSender) {
-    // Reuso do sender: replaceTrack não renegocia nem cria m-line nova (SDP não cresce)
-    peer.screenSender.replaceTrack(track).catch(() => {});
+    peer.screenSender.replaceTrack(vTrack).catch(() => {}); // replaceTrack não renegocia (SDP não cresce)
   } else {
-    peer.screenSender = peer.pc.addTrack(track, screenStream);
+    peer.screenSender = peer.pc.addTrack(vTrack, screenStream);
     preferBestCodec(peer.pc, peer.screenSender);
+  }
+  if (aTrack) {
+    if (peer.screenAudioSender) peer.screenAudioSender.replaceTrack(aTrack).catch(() => {});
+    else peer.screenAudioSender = peer.pc.addTrack(aTrack, screenStream);
   }
   viewerSenders.set(from, peer.screenSender);
   retuneSenders(); // encodings tardios: onsignalingstatechange re-aplica quando fechar
 });
 
 socket.on('watch-stop', ({ from } = {}) => {
-  const sender = viewerSenders.get(from);
-  if (!sender) return;
-  viewerSenders.delete(from);
-  sender.replaceTrack(null).catch(() => {}); // corta o vídeo sem renegociação
+  if (!viewerSenders.delete(from)) return;
+  const peer = peers.get(from);
+  peer?.screenSender?.replaceTrack(null).catch(() => {});      // corta vídeo sem renegociação
+  peer?.screenAudioSender?.replaceTrack(null).catch(() => {}); // e o áudio
   retuneSenders(); // sobrou banda para os que ficaram
 });
 
@@ -1428,40 +1492,67 @@ function tileButton(iconId, title, onClick) {
 function updateLiveMode() {
   const live = $('screens').children.length > 0;
   $('screens').classList.toggle('hidden', !live);
-  document.querySelector('.content').classList.toggle('live-mode', live);
+  const content = document.querySelector('.content');
+  content.classList.toggle('live-mode', live);
+  if (!live) content.classList.remove('chat-open'); // sem lives, o chat volta a ser o padrão
 }
+
+// Alternância chat ⇄ lives: clicar em #geral minimiza as lives; a tag vermelha volta pra elas
+$('text-geral').onclick = () => {
+  if (document.querySelector('.content').classList.contains('live-mode')) {
+    document.querySelector('.content').classList.add('chat-open');
+    $('chat-input').focus();
+  }
+};
+$('back-to-live').onclick = () => document.querySelector('.content').classList.remove('chat-open');
 
 function addScreenTile(id, stream, muted = false) {
   removeScreenTile(id);
   const tile = document.createElement('div');
   tile.className = 'screen-tile';
   tile.id = 'screen-' + id;
-  let width = 420;
-  const setWidth = (w) => {
-    width = Math.max(240, Math.min(1400, w));
-    tile.style.setProperty('--tile-w', width + 'px');
-  };
-  setWidth(width);
-  // Zoom com o scroll do mouse sobre a live
-  tile.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    setWidth(width + (e.deltaY < 0 ? 60 : -60));
-    // Ampliada ao tamanho máximo: essa live assume o primeiro lugar do grid
-    if (width >= 1400 && tile.previousElementSibling) $('screens').prepend(tile);
-  }, { passive: false });
 
+  const isSelf = id === selfId;
   const video = document.createElement('video');
   video.autoplay = true;
   video.playsInline = true;
-  video.muted = muted;
+  // Própria tela sempre muda (evita eco); live de outro toca, mas fica muda se estou silenciado
+  video.muted = muted || (!isSelf && deafened);
   video.srcObject = stream;
 
   const label = document.createElement('div');
   label.className = 'label';
-  label.textContent = id === selfId ? 'Sua tela' : voiceUserName(id);
+  label.textContent = isSelf ? 'Sua tela' : voiceUserName(id);
 
   const controls = document.createElement('div');
   controls.className = 'controls';
+
+  // Volume da live (áudio compartilhado) — só nas telas de outros; ícones ao lado do maximizar
+  if (!isSelf) {
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = 0;
+    slider.max = 100;
+    slider.value = 100;
+    slider.className = 'tile-vol';
+    slider.title = 'Volume da live';
+    const setIcon = (btn) => btn.querySelector('use').setAttribute('href', video.muted ? '#i-volume-x' : '#i-volume');
+    const volBtn = tileButton('volume', 'Mudo / Som da live', () => {
+      video.muted = !video.muted;
+      if (!video.muted) video.play().catch(() => {});
+      setIcon(volBtn);
+      slider.disabled = video.muted;
+    });
+    slider.oninput = () => {
+      video.volume = slider.value / 100;
+      if (video.volume > 0 && video.muted) { video.muted = false; setIcon(volBtn); }
+      slider.disabled = false;
+    };
+    setIcon(volBtn);            // reflete o estado inicial (mudo se silenciado)
+    slider.disabled = video.muted;
+    controls.append(volBtn, slider);
+  }
+
   controls.append(tileButton('fullscreen', 'Tela cheia', () => video.requestFullscreen?.().catch(() => {})));
   video.ondblclick = () => video.requestFullscreen?.().catch(() => {});
 
