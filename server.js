@@ -136,8 +136,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS messages (
 )`);
 try { db.exec('ALTER TABLE messages ADD COLUMN img TEXT'); } catch { /* coluna já existe */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER'); } catch { /* coluna já existe */ }
-const insertMsg = db.prepare('INSERT INTO messages (username, text, ts, img) VALUES (?, ?, ?, ?)');
-const trimMsgs = db.prepare('DELETE FROM messages WHERE id <= (SELECT MAX(id) FROM messages) - ?');
+try { db.exec("ALTER TABLE messages ADD COLUMN server TEXT NOT NULL DEFAULT 'hx'"); } catch { /* coluna já existe */ }
+const insertMsg = db.prepare('INSERT INTO messages (username, text, ts, img, server) VALUES (?, ?, ?, ?, ?)');
+// Trim por servidor: cada servidor mantém as próprias 100 mensagens
+const trimMsgs = db.prepare('DELETE FROM messages WHERE server = ? AND id <= (SELECT MAX(id) FROM messages WHERE server = ?) - ?');
+const historyFor = db.prepare(`SELECT id, username, text, ts, img, edited FROM
+  (SELECT * FROM messages WHERE server = ? ORDER BY id DESC LIMIT 100) ORDER BY id ASC`);
 const updateMsg = db.prepare('UPDATE messages SET text = ?, edited = 1 WHERE id = ? AND username = ?');
 const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ? AND username = ?');
 const renameMsgs = db.prepare('UPDATE messages SET username = ? WHERE username = ?');
@@ -205,34 +209,64 @@ async function checkPassword(username, password) {
 
 // ---------- Estado do servidor único "HX" (em memória) ----------
 // ponytail: memória volátil; persistir mensagens no sqlite se precisar sobreviver a restart
-const SERVER_NAME = 'HX';
 const MAX_HISTORY = 100;
 const shareStart = new Map(); // socketId -> ts do início da transmissão (para log de duração)
 
-// Salas de voz fixas. id = chave estável do protocolo; name = rótulo exibido. O servidor é a fonte:
-// o cliente renderiza a lista que vem no ack, então adicionar/renomear sala é só mexer aqui.
-const VOICE_ROOMS = [
-  { id: 'akon', name: 'akon_lonely_brega.mp3' },
-  { id: 'tibia', name: 'Tibia' },
+// Servidores fixos, cada um com um canal de texto "geral" e suas salas de voz. O servidor é a fonte:
+// o cliente renderiza tudo a partir do que vem no ack, então mexer aqui basta para add/renomear.
+const SERVERS = [
+  { id: 'hx', name: 'HX', voiceRooms: [
+    { id: 'akon', name: 'akon_lonely_brega.mp3' },
+    { id: 'tibia', name: 'Tibia' },
+  ] },
+  { id: 'panteras', name: 'Panteras', voiceRooms: [
+    { id: 'pan-1', name: 'Sala 1' }, { id: 'pan-2', name: 'Sala 2' }, { id: 'pan-3', name: 'Sala 3' },
+  ] },
+  { id: 'serverb', name: 'Server B', voiceRooms: [
+    { id: 'b-1', name: 'Sala 1' }, { id: 'b-2', name: 'Sala 2' }, { id: 'b-3', name: 'Sala 3' },
+  ] },
 ];
-const VOICE_ROOM_IDS = new Set(VOICE_ROOMS.map((r) => r.id));
+const SERVER_IDS = new Set(SERVERS.map((s) => s.id));
+const DEFAULT_SERVER = SERVERS[0].id;
+const ROOM_SERVER = new Map();     // roomId -> serverId (sala pertence a um servidor)
+const VOICE_ROOM_IDS = new Set();
+for (const s of SERVERS) for (const r of s.voiceRooms) { ROOM_SERVER.set(r.id, s.id); VOICE_ROOM_IDS.add(r.id); }
+const srvRoom = (serverId) => 'srv:' + serverId; // sala do socket.io que agrupa quem vê aquele servidor
 
 const state = {
-  users: new Map(),    // socketId -> username
-  messages: db.prepare(`SELECT id, username, text, ts, img, edited FROM
-    (SELECT * FROM messages ORDER BY id DESC LIMIT ${MAX_HISTORY}) ORDER BY id ASC`).all(),
+  users: new Map(),    // socketId -> username (online global)
+  viewing: new Map(),  // socketId -> serverId que está vendo agora (1 por vez)
+  messages: {},        // serverId -> array das últimas mensagens (carregado do banco por servidor)
   voice: new Map(),    // socketId -> roomId em que está (no máx. 1 sala por vez, como no Discord)
   muted: new Set(),    // socketIds mutados
   deafened: new Set(), // socketIds com o canal silenciado (não ouvem ninguém)
   sharing: new Set(),  // socketIds transmitindo tela
   thumbs: new Map(),   // socketId -> último thumbnail (data URL)
 };
+for (const s of SERVERS) state.messages[s.id] = historyFor.all(s.id);
 
 // Peers da MESMA sala (o mesh WebRTC se forma só dentro de cada sala)
 function voicePeers(room, exceptId) {
   const out = [];
   for (const [id, r] of state.voice) if (r === room && id !== exceptId) out.push({ id, username: state.users.get(id) });
   return out;
+}
+
+// Retrato do servidor para o cliente montar a tela ao entrar/trocar
+function serverSnapshot(serverId) {
+  const srv = SERVERS.find((s) => s.id === serverId);
+  const here = (id) => state.viewing.get(id) === serverId;
+  const inRoom = (id) => state.voice.has(id) && ROOM_SERVER.get(state.voice.get(id)) === serverId;
+  return {
+    server: serverId,
+    serverName: srv.name,
+    voiceRooms: srv.voiceRooms,
+    messages: state.messages[serverId],
+    users: [...state.users].filter(([id]) => here(id)).map(([id, username]) => ({ id, username })),
+    voiceUsers: [...state.voice].filter(([id]) => inRoom(id))
+      .map(([id, room]) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id), room })),
+    sharers: [...state.sharing].filter((id) => here(id)).map((id) => ({ id, username: state.users.get(id), thumb: state.thumbs.get(id) || null })),
+  };
 }
 
 const MAX_NAME = 32;
@@ -287,6 +321,7 @@ const RATE_COST = {
   watch: 1, unwatch: 1, 'join-voice': 1, 'leave-voice': 1,
   'set-muted': 1, 'set-deafened': 1, 'screen-share': 1,
   logout: 1, 'get-profile': 1, 'ping-hx': 0.5, // ping legítimo é 1 a cada 5s: folga enorme
+  'switch-server': 2,
 };
 const RATE_MAX = 60;
 const RATE_REFILL = 6; // tokens por segundo
@@ -322,6 +357,9 @@ io.on('connection', (socket) => {
   // Também exige presença no estado: um socket derrubado por dropStale perde a voz na hora,
   // mesmo que eventos dele ainda cheguem antes do disconnect completar
   const loggedIn = () => username !== null && state.users.has(socket.id);
+  const curServer = () => state.viewing.get(socket.id) || DEFAULT_SERVER; // servidor que este socket vê
+  const toServer = () => socket.to(srvRoom(curServer()));   // broadcast p/ os OUTROS do meu servidor
+  const inServer = () => io.to(srvRoom(curServer()));       // broadcast p/ TODOS do meu servidor (incl. eu)
 
   // Remove do estado uma conexão antiga da mesma conta (substituída ou já morta).
   // Deletes idempotentes: se o socket antigo ainda disparar 'disconnect', nada duplica.
@@ -331,8 +369,10 @@ io.on('connection', (socket) => {
       old.emit('session-superseded');
       setTimeout(() => old.disconnect(true), 100); // aviso chega antes de fechar
     }
+    const sv = state.viewing.get(id) || DEFAULT_SERVER; // servidor onde a conexão antiga estava
     console.log(`[sessão] ${name}: conexão ${id} substituída por ${socket.id}`);
     state.users.delete(id);
+    state.viewing.delete(id);
     state.muted.delete(id);
     state.deafened.delete(id);
     if (state.sharing.delete(id)) {
@@ -340,13 +380,24 @@ io.on('connection', (socket) => {
       const dur = Math.round((Date.now() - (shareStart.get(id) || Date.now())) / 1000);
       shareStart.delete(id);
       console.log(`[share] fim: ${name} após ${dur}s — motivo: sessão substituída por nova conexão da mesma conta`);
-      io.to(SERVER_NAME).emit('screen-share', { id, username: name, on: false });
+      io.to(srvRoom(sv)).emit('screen-share', { id, username: name, on: false });
     }
     if (state.voice.delete(id)) {
       console.log(`[voz] saiu: ${name} — motivo: sessão substituída por nova conexão da mesma conta`);
-      io.to(SERVER_NAME).emit('voice-user-left', { id });
+      io.to(srvRoom(sv)).emit('voice-user-left', { id });
     }
-    io.to(SERVER_NAME).emit('user-left', { id, username: name });
+    io.to(srvRoom(sv)).emit('user-left', { id, username: name });
+  }
+
+  // Fotos de perfil de quem está online no MESMO servidor (evita ack gigante com blobs de todo mundo)
+  function onlineAvatars(serverId) {
+    const avatars = {};
+    for (const [id, n] of state.users) {
+      if (state.viewing.get(id) !== serverId) continue;
+      const row = getAvatar.get(n);
+      if (row && row.avatar) avatars[n] = row.avatar;
+    }
+    return avatars;
   }
 
   function enterServer(name, ack, token) {
@@ -357,30 +408,35 @@ io.on('connection', (socket) => {
     }
     username = name;
     state.users.set(socket.id, username);
-    socket.join(SERVER_NAME);
-    // Só fotos de quem está online: histórico com blobs de todo mundo inflava o ack a centenas
-    // de KB por login/reconexão. Quem entra depois chega com a própria foto no 'user-joined'.
-    const avatars = {};
-    for (const n of new Set(state.users.values())) {
-      const row = getAvatar.get(n);
-      if (row && row.avatar) avatars[n] = row.avatar;
-    }
+    state.viewing.set(socket.id, DEFAULT_SERVER);
+    socket.join('all');                    // eventos globais (avatar/rename)
+    socket.join(srvRoom(DEFAULT_SERVER));   // eventos do servidor visto
     ack({
-      avatars,
       ok: true,
-      server: SERVER_NAME,
       token: token === undefined ? newSession(name) : token,
       selfId: socket.id,
       username, // nome canônico do banco (login "ANA" -> "ana")
-      messages: state.messages,
-      users: userList(),
-      allUsers: allUsernames.all().map((r) => r.username), // lista de membros com seção offline
-      voiceRooms: VOICE_ROOMS, // salas de voz disponíveis (cliente renderiza a partir daqui)
-      voiceUsers: [...state.voice].map(([id, room]) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id), room })),
-      sharers: [...state.sharing].map((id) => ({ id, username: state.users.get(id), thumb: state.thumbs.get(id) || null })),
+      servers: SERVERS.map((s) => ({ id: s.id, name: s.name })), // barra de servidores
+      allUsers: allUsernames.all().map((r) => r.username),       // membros (seção offline)
+      avatars: onlineAvatars(DEFAULT_SERVER),
+      ...serverSnapshot(DEFAULT_SERVER),
     });
     const own = getAvatar.get(username);
-    socket.to(SERVER_NAME).emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
+    socket.to(srvRoom(DEFAULT_SERVER)).emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
+  }
+
+  // Trocar de servidor: sai da voz, muda a sala do socket.io e entrega o retrato do novo servidor
+  function switchServer(sid, ack) {
+    const from = state.viewing.get(socket.id);
+    if (from === sid) return ack({ ok: true, avatars: onlineAvatars(sid), ...serverSnapshot(sid) });
+    leaveVoice('trocou de servidor'); // voz é por servidor: sair ao trocar
+    socket.leave(srvRoom(from));
+    socket.to(srvRoom(from)).emit('user-left', { id: socket.id, username });
+    state.viewing.set(socket.id, sid);
+    socket.join(srvRoom(sid));
+    ack({ ok: true, avatars: onlineAvatars(sid), ...serverSnapshot(sid) });
+    const own = getAvatar.get(username);
+    socket.to(srvRoom(sid)).emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
   }
 
   on('register', async (payload, ack) => {
@@ -457,7 +513,7 @@ io.on('connection', (socket) => {
     if (img !== null && !validImage(img, MAX_AVATAR)) return ack({ error: 'Imagem inválida (JPEG/PNG/WebP, máx. 100KB).' });
     setAvatar.run(img, username); // null remove a foto
     ack({ ok: true });
-    socket.to(SERVER_NAME).emit('avatar-changed', { username, avatar: img });
+    socket.to('all').emit('avatar-changed', { username, avatar: img }); // foto é global (todos os servidores)
   });
 
   on('rename', (payload, ack) => {
@@ -478,8 +534,10 @@ io.on('connection', (socket) => {
     const oldName = username;
     username = name;
     state.users.set(socket.id, username);
+    // Nome antigo nas mensagens em memória (de todos os servidores) acompanha o rename
+    for (const arr of Object.values(state.messages)) for (const m of arr) if (m.username === oldName) m.username = name;
     ack({ ok: true, username });
-    socket.to(SERVER_NAME).emit('user-renamed', { id: socket.id, oldName, newName: name });
+    socket.to('all').emit('user-renamed', { id: socket.id, oldName, newName: name }); // nome é global
   });
 
   on('chat-message', (payload) => {
@@ -489,15 +547,26 @@ io.on('connection', (socket) => {
     const hasImg = img !== undefined && img !== null;
     if (hasImg && !validImage(img, MAX_THUMB)) return;
     if ((!text && !hasImg) || text.length > MAX_MSG) return;
+    const sv = curServer();
     const ts = Date.now();
-    const info = insertMsg.run(username, text, ts, hasImg ? img : null);
+    const info = insertMsg.run(username, text, ts, hasImg ? img : null, sv);
     const msg = { id: Number(info.lastInsertRowid), username, text, ts };
     if (hasImg) msg.img = img;
-    state.messages.push(msg);
-    if (state.messages.length > MAX_HISTORY) state.messages.shift();
-    trimMsgs.run(MAX_HISTORY);
-    io.to(SERVER_NAME).emit('chat-message', msg);
+    const arr = state.messages[sv];
+    arr.push(msg);
+    if (arr.length > MAX_HISTORY) arr.shift();
+    trimMsgs.run(sv, sv, MAX_HISTORY);
+    inServer().emit('chat-message', msg);
   });
+
+  // Acha uma mensagem (e seu servidor) pelo id, em qualquer servidor
+  function findMsg(id) {
+    for (const [sv, arr] of Object.entries(state.messages)) {
+      const m = arr.find((x) => x.id === id);
+      if (m) return { sv, m };
+    }
+    return null;
+  }
 
   // Editar/apagar: o WHERE username=? garante que só o autor mexe na própria mensagem
   on('edit-message', (payload, ack) => {
@@ -507,10 +576,10 @@ io.on('connection', (socket) => {
     const text = payload && typeof payload.text === 'string' ? payload.text.trim() : '';
     if (!Number.isInteger(id) || !text || text.length > MAX_MSG) return ack({ error: 'Mensagem inválida.' });
     if (updateMsg.run(text, id, username).changes === 0) return ack({ error: 'Só dá para editar as próprias mensagens.' });
-    const m = state.messages.find((x) => x.id === id);
-    if (m) { m.text = text; m.edited = 1; }
+    const found = findMsg(id);
+    if (found) { found.m.text = text; found.m.edited = 1; }
     ack({ ok: true });
-    io.to(SERVER_NAME).emit('message-edited', { id, text });
+    io.to(srvRoom(found ? found.sv : curServer())).emit('message-edited', { id, text });
   });
 
   on('delete-message', (payload, ack) => {
@@ -519,15 +588,24 @@ io.on('connection', (socket) => {
     const id = payload && payload.id;
     if (!Number.isInteger(id)) return ack({ error: 'Mensagem inválida.' });
     if (deleteMsg.run(id, username).changes === 0) return ack({ error: 'Só dá para apagar as próprias mensagens.' });
-    const i = state.messages.findIndex((x) => x.id === id);
-    if (i !== -1) state.messages.splice(i, 1);
+    const found = findMsg(id);
+    if (found) state.messages[found.sv] = state.messages[found.sv].filter((x) => x.id !== id);
     ack({ ok: true });
-    io.to(SERVER_NAME).emit('message-deleted', { id });
+    io.to(srvRoom(found ? found.sv : curServer())).emit('message-deleted', { id });
+  });
+
+  // Trocar de servidor: recebe o retrato do novo (canal, salas de voz, mensagens, membros)
+  on('switch-server', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
+    const sid = payload && payload.server;
+    if (!SERVER_IDS.has(sid)) return ack({ error: 'Servidor inválido.' });
+    switchServer(sid, ack);
   });
 
   // "Fulano está digitando…" — volatile: pode se perder na reconexão sem fazer falta
   on('typing', () => {
-    if (loggedIn()) socket.to(SERVER_NAME).volatile.emit('typing', { username });
+    if (loggedIn()) toServer().volatile.emit('typing', { username });
   });
 
   // Medição de latência: só devolve o ack para o cliente cronometrar o round-trip (custo ~0)
@@ -538,11 +616,12 @@ io.on('connection', (socket) => {
     if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
     const room = payload && payload.room;
     if (!VOICE_ROOM_IDS.has(room)) return ack({ error: 'Sala inválida.' });
+    if (ROOM_SERVER.get(room) !== curServer()) return ack({ error: 'Sala de outro servidor.' }); // só salas do servidor visto
     if (state.voice.get(socket.id) === room) return ack({ peers: voicePeers(room, socket.id), room }); // já nesta sala
     if (state.voice.has(socket.id)) leaveVoice('trocou de sala'); // sai da sala anterior antes de entrar na nova
     state.voice.set(socket.id, room);
     ack({ peers: voicePeers(room, socket.id), room });
-    socket.to(SERVER_NAME).emit('voice-user-joined', { id: socket.id, username, room });
+    toServer().emit('voice-user-joined', { id: socket.id, username, room });
   });
 
   on('set-muted', (payload) => {
@@ -550,7 +629,7 @@ io.on('connection', (socket) => {
     const muted = !!(payload && payload.muted);
     if (muted) state.muted.add(socket.id);
     else state.muted.delete(socket.id);
-    socket.to(SERVER_NAME).emit('user-muted', { id: socket.id, muted });
+    toServer().emit('user-muted', { id: socket.id, muted });
   });
 
   on('set-deafened', (payload) => {
@@ -558,7 +637,7 @@ io.on('connection', (socket) => {
     const deafened = !!(payload && payload.deafened);
     if (deafened) state.deafened.add(socket.id);
     else state.deafened.delete(socket.id);
-    socket.to(SERVER_NAME).emit('user-deafened', { id: socket.id, deafened });
+    toServer().emit('user-deafened', { id: socket.id, deafened });
   });
 
   function stopSharing(reason = 'não especificado') {
@@ -567,7 +646,7 @@ io.on('connection', (socket) => {
       const dur = Math.round((Date.now() - (shareStart.get(socket.id) || Date.now())) / 1000);
       shareStart.delete(socket.id);
       console.log(`[share] fim: ${username} após ${dur}s — motivo: ${reason}`);
-      socket.to(SERVER_NAME).emit('screen-share', { id: socket.id, username, on: false });
+      toServer().emit('screen-share', { id: socket.id, username, on: false });
     }
   }
 
@@ -577,7 +656,7 @@ io.on('connection', (socket) => {
     state.deafened.delete(socket.id);
     if (state.voice.delete(socket.id)) {
       console.log(`[voz] saiu: ${username} — motivo: ${reason}`);
-      socket.to(SERVER_NAME).emit('voice-user-left', { id: socket.id });
+      toServer().emit('voice-user-left', { id: socket.id });
     }
   }
 
@@ -603,7 +682,7 @@ io.on('connection', (socket) => {
         console.log(`[share] início: ${username} (${socket.id}) — ${state.voice.size} na voz, ${state.users.size} online`);
       }
       state.sharing.add(socket.id);
-      socket.to(SERVER_NAME).emit('screen-share', { id: socket.id, username, on: true });
+      toServer().emit('screen-share', { id: socket.id, username, on: true });
     } else {
       // Motivo vem do cliente (botão do app, navegador encerrou a captura, etc.)
       const reason = payload && typeof payload.reason === 'string' ? payload.reason.slice(0, 120) : 'parada pelo usuário';
@@ -617,7 +696,7 @@ io.on('connection', (socket) => {
     const img = payload && payload.img;
     if (!validImage(img, MAX_THUMB)) return;
     state.thumbs.set(socket.id, img);
-    socket.to(SERVER_NAME).emit('screen-thumb', { id: socket.id, img });
+    toServer().emit('screen-thumb', { id: socket.id, img });
   });
 
   // Espectador pede/encerra a transmissão de alguém (vídeo só vai para quem assiste)
@@ -642,7 +721,8 @@ io.on('connection', (socket) => {
     if (!loggedIn()) return;
     leaveVoice('desconectou: ' + reason);
     // delete pode já ter acontecido via dropStale: só notifica se éramos nós que removemos
-    if (state.users.delete(socket.id)) socket.to(SERVER_NAME).emit('user-left', { id: socket.id, username });
+    if (state.users.delete(socket.id)) toServer().emit('user-left', { id: socket.id, username });
+    state.viewing.delete(socket.id);
   });
 });
 

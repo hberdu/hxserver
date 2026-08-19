@@ -172,35 +172,86 @@ socket.on('connect', () => {
   });
 });
 
+let currentServerId = null;
+
 function enterApp(res) {
   selfId = res.selfId;
   username = res.username;
   if (res.token) localStorage.setItem('hx-token', res.token);
-  avatares.clear();
-  lastAuthor = null;
-  $('messages').replaceChildren();
-  $('user-list').replaceChildren();
-  renderVoiceRooms(res.voiceRooms || []);
-  sharers.clear();
-  Object.entries(res.avatars || {}).forEach(([n, img]) => avatares.set(n, img));
+  renderServerRail(res.servers || [], res.server);
+  allNames.clear();
+  (res.allUsers || []).forEach((n) => allNames.add(n));
   $('login-screen').classList.add('hidden');
   $('main-screen').classList.remove('hidden');
   $('self-name').textContent = username;
   $('self-avatar').replaceChildren(avatarEl(username, 28));
-  res.messages.forEach(renderMessage);
-  allNames.clear();
+  applyServerView(res); // canal, mensagens, membros, voz e transmissões do servidor atual
+  $('chat-input').focus();
+  renderNetStatus();
+}
+
+// Monta a tela para o servidor do snapshot (usado no login e ao trocar de servidor)
+function applyServerView(res) {
+  currentServerId = res.server;
+  hidePreview(); // popup de prévia não pode ficar aberto apontando p/ sharer do servidor anterior
+  $('server-header').textContent = res.serverName || 'HX';
+  document.querySelectorAll('#server-rail .rail-icon').forEach((el) =>
+    el.classList.toggle('active', el.id === 'rail-' + res.server));
+  avatares.clear();
+  Object.entries(res.avatars || {}).forEach(([n, img]) => avatares.set(n, img));
+  lastAuthor = null;
+  $('messages').replaceChildren();
+  $('user-list').replaceChildren();
   onlineNames.clear();
-  (res.allUsers || []).forEach((n) => allNames.add(n));
-  res.users.forEach((user) => addUser(user.id, user.username));
+  sharers.clear();
+  renderVoiceRooms(res.voiceRooms || []);
+  (res.messages || []).forEach(renderMessage);
+  (res.users || []).forEach((user) => addUser(user.id, user.username));
   renderOffline();
-  res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted, user.deafened, user.room));
-  res.sharers.forEach((s) => {
+  (res.voiceUsers || []).forEach((user) => addVoiceUser(user.id, user.username, user.muted, user.deafened, user.room));
+  (res.sharers || []).forEach((s) => {
     sharers.set(s.id, { username: s.username, thumb: s.thumb });
     updateBadge(s.id, true);
   });
+  document.querySelector('.content').classList.remove('chat-open'); // troca de servidor volta pro chat
   scrollMessages();
-  $('chat-input').focus();
-  renderNetStatus();
+}
+
+// Barra de servidores (esquerda): ícones com iniciais, clicáveis para trocar
+function serverInitials(name) {
+  const parts = String(name).trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.length <= 3 ? name.toUpperCase() : name[0].toUpperCase();
+}
+
+let serverList = [];
+function serverName(id) {
+  return (serverList.find((s) => s.id === id) || {}).name || 'HX';
+}
+
+function renderServerRail(servers, active) {
+  serverList = servers;
+  const rail = $('server-rail');
+  rail.replaceChildren();
+  servers.forEach((s) => {
+    const el = document.createElement('div');
+    el.className = 'rail-icon' + (s.id === active ? ' active' : '');
+    el.id = 'rail-' + s.id;
+    el.title = s.name;
+    el.textContent = serverInitials(s.name);
+    el.onclick = () => switchToServer(s.id);
+    rail.appendChild(el);
+  });
+}
+
+function switchToServer(sid) {
+  if (!sid || sid === currentServerId) return;
+  socket.emit('switch-server', { server: sid }, (res) => {
+    if (!res || res.error) { systemMessage((res && res.error) || 'Falha ao trocar de servidor.'); return; }
+    if (inVoice) leaveVoice(); // voz é por servidor: sai da call ao trocar (servidor já removeu do estado)
+    applyServerView(res);
+    renderNetStatus();
+  });
 }
 
 function auth(event) {
@@ -589,6 +640,7 @@ const peers = new Map();         // peerId -> { pc, makingOffer, ignoreOffer, po
 const sharers = new Map();       // sharerId -> { username, thumb }
 const watching = new Set();      // sharerIds que estou assistindo
 const viewerSenders = new Map(); // viewerId -> RTCRtpSender do meu vídeo de tela
+const screenStreams = new Map(); // sharerId -> MediaStream da tela dele (cache p/ re-assistir sem novo ontrack)
 
 function addVoiceUser(id, name, muted = false, deafened = false, room = currentRoom) {
   const ul = document.getElementById('voice-users-' + room);
@@ -669,7 +721,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     $('profile-overlay').classList.add('hidden');
     closeUserProfile();
-    closePreview();
+    hidePreview();
   } else if (e.ctrlKey && e.shiftKey && e.code === 'KeyM') {
     e.preventDefault();
     toggleMute();
@@ -860,7 +912,7 @@ function renderNetStatus() {
     : inVoice ? 'Voz conectada'
     : 'Online';
   line1.classList.toggle('voice', socket.connected && (inVoice || sharing));
-  $('net-line2').textContent = 'HX · ' + (inVoice && currentRoom ? voiceRoomName(currentRoom) : '# geral');
+  $('net-line2').textContent = serverName(currentServerId) + ' · ' + (inVoice && currentRoom ? voiceRoomName(currentRoom) : '# geral');
 }
 
 function measurePing() {
@@ -1007,6 +1059,7 @@ function getPeer(peerId) {
     const stream = streams[0] || new MediaStream([track]);
     const isScreen = stream.getVideoTracks().length > 0;
     if (track.kind === 'video') {
+      screenStreams.set(peerId, stream); // guarda p/ re-assistir: replaceTrack não dispara novo ontrack
       if (!watching.has(peerId)) return; // unwatch venceu a corrida com a renegociação
       addScreenTile(peerId, stream); // stream com vídeo E áudio da live: o som toca no próprio <video>
       track.onended = () => removeScreenTile(peerId);
@@ -1048,6 +1101,7 @@ function removePeer(peerId) {
   peers.delete(peerId);
   if (viewerSenders.delete(peerId)) retuneSenders(); // espectador caiu: redistribui banda
   watching.delete(peerId);
+  screenStreams.delete(peerId); // pc fechado: o stream em cache não vale mais
   detachSpeaking(peerId);
   state.pc.close();
   document.getElementById('audio-' + peerId)?.remove();
@@ -1233,8 +1287,9 @@ function sharerGone(id) {
   if (!sharers.delete(id)) return;
   updateBadge(id, false);
   watching.delete(id);
+  screenStreams.delete(id); // transmissão encerrou de verdade: descarta o stream em cache
   removeScreenTile(id);
-  if (previewId === id) closePreview();
+  if (previewId === id) hidePreview();
 }
 
 function updateBadge(id, on) {
@@ -1245,32 +1300,50 @@ function updateBadge(id, on) {
     badge = document.createElement('span');
     badge.className = 'live-badge';
     badge.textContent = 'AO VIVO';
-    badge.title = 'Ver prévia da transmissão';
-    badge.onclick = (e) => { e.stopPropagation(); openPreview(id); }; // não abrir o perfil junto
+    badge.title = 'Prévia da transmissão';
+    // Prévia em hover (não modal): passar o mouse mostra o popup; sair esconde com folga
+    badge.onmouseenter = () => showPreview(id, badge);
+    badge.onmouseleave = schedulePreviewHide;
+    badge.onclick = (e) => e.stopPropagation(); // não abrir o perfil ao clicar no badge
     li.appendChild(badge);
   } else if (!on && badge) {
     badge.remove();
   }
 }
 
-function openPreview(id) {
-  if (id === selfId) return; // sua própria tela já aparece no painel (badge é só indicador)
+// ---------- Prévia em hover no badge AO VIVO ----------
+let previewHideTimer = null;
+
+function showPreview(id, badge) {
+  if (id === selfId) return; // sua própria tela já aparece no painel
+  clearTimeout(previewHideTimer);
   previewId = id;
+  const pop = $('live-preview');
+  // Ancora ao lado do badge, dentro da tela
+  const r = badge.getBoundingClientRect();
+  pop.style.left = Math.min(r.right + 8, window.innerWidth - 320) + 'px';
+  pop.style.top = Math.min(r.top, window.innerHeight - 240) + 'px';
   updatePreview();
-  $('preview-overlay').classList.remove('hidden');
+  pop.classList.remove('hidden');
 }
 
-function closePreview() {
+function schedulePreviewHide() {
+  clearTimeout(previewHideTimer);
+  previewHideTimer = setTimeout(hidePreview, 250); // folga para levar o mouse até o popup
+}
+
+function hidePreview() {
   previewId = null;
-  $('preview-overlay').classList.add('hidden');
+  $('live-preview').classList.add('hidden');
 }
 
-$('preview-close').onclick = closePreview;
-$('preview-overlay').onclick = (e) => { if (e.target === $('preview-overlay')) closePreview(); };
+// Manter aberto enquanto o mouse está no popup (para clicar em Assistir)
+$('live-preview').onmouseenter = () => clearTimeout(previewHideTimer);
+$('live-preview').onmouseleave = schedulePreviewHide;
 
 function updatePreview() {
   const s = sharers.get(previewId);
-  if (!s) { closePreview(); return; }
+  if (!s) { hidePreview(); return; }
   $('preview-title').textContent = s.username + ' está transmitindo';
   if (s.thumb) {
     $('preview-img').src = s.thumb;
@@ -1283,7 +1356,7 @@ function updatePreview() {
   const btn = $('preview-watch');
   if (!inVoice) {
     btn.disabled = true;
-    btn.textContent = 'Entre no canal de voz para assistir';
+    btn.textContent = 'Entre na voz para assistir';
     btn.className = '';
   } else if (watching.has(previewId)) {
     btn.disabled = false;
@@ -1298,9 +1371,8 @@ function updatePreview() {
 
 $('preview-watch').onclick = () => {
   if (!previewId || !inVoice) return;
-  const started = !watching.has(previewId);
   toggleWatch(previewId);
-  if (started) closePreview();
+  updatePreview(); // reflete Assistir/Parar sem fechar o popup
 };
 
 // ---------- Editar perfil (foto) ----------
@@ -1467,14 +1539,21 @@ function toggleWatch(id) {
   if (watching.has(id)) {
     socket.emit('unwatch', { to: id });
     watching.delete(id);
-    removeScreenTile(id);
+    removeScreenTile(id); // stream fica em cache (screenStreams) para reabrir na hora ao voltar
   } else {
     watching.add(id);
+    // Sair do modo chat para ver a live que abri
+    document.querySelector('.content').classList.remove('chat-open');
     socket.emit('watch', { to: id }, (res) => {
       if (!res || !res.ok) { // transmissão acabou de encerrar
         watching.delete(id);
         removeScreenTile(id);
+        return;
       }
+      // Re-assistir: o transmissor faz replaceTrack (sem novo ontrack), então recrio o tile do cache.
+      // Primeira vez: o cache ainda não existe e o tile nasce no ontrack.
+      const cached = screenStreams.get(id);
+      if (cached && !document.getElementById('screen-' + id)) addScreenTile(id, cached);
     });
   }
   if (previewId) updatePreview();

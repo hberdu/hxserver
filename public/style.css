@@ -23,8 +23,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 
 /* Coluna de servidores (rail) */
 .server-rail { width: 72px; background: #1e1f22; padding-top: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.rail-icon { position: relative; width: 48px; height: 48px; border-radius: 50%; background: #313338; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-radius .15s; }
-.rail-icon:hover, .rail-icon.active { border-radius: 16px; }
+.rail-icon { position: relative; width: 48px; height: 48px; border-radius: 50%; background: #313338; color: #fff; font-weight: 700; font-size: 17px; letter-spacing: .5px; user-select: none; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-radius .15s, background .15s; }
+.rail-icon:hover, .rail-icon.active { border-radius: 16px; background: #5865f2; }
 .rail-icon svg { width: 48px; height: 48px; }
 .rail-icon.active::before { content: ''; position: absolute; left: -12px; width: 4px; height: 40px; background: #fff; border-radius: 0 4px 4px 0; }
 
@@ -104,7 +104,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
   padding: 14px 18px;
   box-sizing: border-box;
 }
-.content.live-mode .screen-tile video { width: auto; max-width: 100%; max-height: 100%; }
+/* Mesmo tamanho independente da resolução: preenche o tile e escala (contain mantém proporção) */
+.content.live-mode .screen-tile video { width: 100%; height: 100%; object-fit: contain; }
 /* Barra de scroll cinza estilizada (WebKit), no tom da plataforma */
 .content.live-mode .screens::-webkit-scrollbar { width: 12px; }
 .content.live-mode .screens::-webkit-scrollbar-track { background: transparent; }
@@ -163,19 +164,16 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .members li.offline { opacity: .45; }
 
 /* Prévia de transmissão */
-#preview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 10; }
-#preview-card { background: #2b2d31; border-radius: 8px; padding: 16px; width: 420px; max-width: 90vw; position: relative; display: flex; flex-direction: column; gap: 12px; }
-#preview-card img { width: 100%; border-radius: 6px; background: #000; min-height: 180px; object-fit: contain; }
-#preview-empty { display: flex; align-items: center; justify-content: center; height: 200px; background: #1e1f22; border-radius: 6px; color: #949ba4; font-size: 14px; }
-#preview-title { color: #fff; font-weight: 600; }
-#preview-watch { padding: 10px; border: none; border-radius: 4px; background: #23a559; color: #fff; font-weight: 600; cursor: pointer; }
+/* Prévia da transmissão: popup em hover no badge AO VIVO (não modal) */
+#live-preview { position: fixed; z-index: 30; width: 300px; background: #111214; border: 1px solid #2b2d31; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+#live-preview img { width: 100%; border-radius: 6px; background: #000; min-height: 150px; object-fit: contain; }
+#preview-empty { display: flex; align-items: center; justify-content: center; height: 150px; background: #1e1f22; border-radius: 6px; color: #949ba4; font-size: 13px; }
+#preview-title { color: #fff; font-weight: 600; font-size: 13px; }
+#preview-watch { padding: 8px; border: none; border-radius: 4px; background: #23a559; color: #fff; font-weight: 600; cursor: pointer; font-size: 13px; }
 #preview-watch:hover { background: #1e9150; }
 #preview-watch.watching { background: #f23f43; }
 #preview-watch.watching:hover { background: #d83134; }
 #preview-watch:disabled { background: #4e5058; cursor: not-allowed; }
-#preview-close { position: absolute; top: 10px; right: 10px; background: none; border: none; color: #b5bac1; cursor: pointer; }
-#preview-close:hover { color: #fff; }
-#preview-close .icon { width: 18px; height: 18px; }
 
 /* Ícones (sprite oculto — classe em vez de style inline por causa da CSP) */
 .svg-defs { display: none; }

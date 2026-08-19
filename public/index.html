@@ -51,16 +51,9 @@
 
   <!-- Tela principal -->
   <div id="main-screen" class="screen hidden">
-    <nav class="server-rail">
-      <div class="rail-icon active" title="HX">
-        <svg viewBox="0 0 48 48">
-          <text x="8" y="33" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#fff">H</text>
-          <text x="23" y="37" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#f23f43">X</text>
-        </svg>
-      </div>
-    </nav>
+    <nav class="server-rail" id="server-rail"></nav>
     <aside class="sidebar">
-      <div class="server-header">HX</div>
+      <div class="server-header" id="server-header">HX</div>
       <div class="channels">
         <div class="channel-label">Canais de texto</div>
         <div class="channel active" id="text-geral"># geral</div>
@@ -105,15 +98,12 @@
     </aside>
   </div>
 
-  <!-- Prévia de transmissão (abre ao clicar no badge AO VIVO) -->
-  <div id="preview-overlay" class="hidden">
-    <div id="preview-card">
-      <button id="preview-close" title="Fechar"><svg class="icon"><use href="#i-x"/></svg></button>
-      <img id="preview-img" alt="Prévia da transmissão">
-      <div id="preview-empty" class="hidden">Aguardando prévia…</div>
-      <div id="preview-title"></div>
-      <button id="preview-watch"></button>
-    </div>
+  <!-- Prévia de transmissão: popup ao passar o mouse no badge "AO VIVO" -->
+  <div id="live-preview" class="hidden">
+    <img id="preview-img" alt="Prévia da transmissão">
+    <div id="preview-empty" class="hidden">Aguardando prévia…</div>
+    <div id="preview-title"></div>
+    <button id="preview-watch"></button>
   </div>
 
   <!-- Perfil de um membro (clique no participante da call) -->

@@ -21,7 +21,8 @@ after(() => {
 beforeEach(() => {
   clients.splice(0).forEach((c) => c.disconnect());
   state.users.clear();
-  state.messages.length = 0;
+  state.viewing.clear();
+  Object.keys(state.messages).forEach((sv) => { state.messages[sv].length = 0; }); // por servidor
   state.voice.clear();
   state.muted.clear();
   state.deafened.clear();
@@ -64,7 +65,9 @@ test('register cria conta e entra no servidor HX', async () => {
   const c = await connect();
   const res = await emitAck(c, 'register', { username: 'ana', password: 'senha123' });
   assert.equal(res.ok, true);
-  assert.equal(res.server, 'HX');
+  assert.equal(res.server, 'hx');
+  assert.equal(res.serverName, 'HX');
+  assert.ok(Array.isArray(res.servers) && res.servers.length === 3, 'três servidores no ack');
   assert.equal(res.selfId, c.id);
   assert.deepEqual(res.messages, []);
   assert.deepEqual(res.sharers, []);
@@ -376,7 +379,7 @@ test('chat: mensagem vazia ou sem login é ignorada', async () => {
   a.emit('chat-message', null);
   intruso.emit('chat-message', { text: 'invasor' });
   await sleep(100);
-  assert.equal(state.messages.length, 0);
+  assert.equal(state.messages.hx.length, 0);
 });
 
 test('chat: mensagem persiste no banco (histórico sobrevive a restart)', async () => {
@@ -408,13 +411,13 @@ test('editar/apagar mensagem: só o autor consegue; propaga e atualiza banco/est
   assert.equal(ev.id, msg.id);
   assert.equal(ev.text, 'corrigida');
   assert.equal(db.prepare('SELECT text, edited FROM messages WHERE id = ?').get(msg.id).text, 'corrigida');
-  assert.equal(state.messages.find((m) => m.id === msg.id).text, 'corrigida');
+  assert.equal(state.messages.hx.find((m) => m.id === msg.id).text, 'corrigida');
 
   const deleted = once(b, 'message-deleted');
   assert.equal((await emitAck(a, 'delete-message', { id: msg.id })).ok, true);
   assert.equal((await deleted).id, msg.id);
   assert.equal(db.prepare('SELECT 1 FROM messages WHERE id = ?').get(msg.id), undefined);
-  assert.ok(!state.messages.some((m) => m.id === msg.id));
+  assert.ok(!state.messages.hx.some((m) => m.id === msg.id));
 });
 
 test('chat com imagem: válida propaga e persiste; inválida é descartada', async () => {
@@ -430,7 +433,7 @@ test('chat com imagem: válida propaga e persiste; inválida é descartada', asy
   a.emit('chat-message', { text: '', img: 'data:text/html;base64,x' });
   a.emit('chat-message', { text: '', img: 'data:image/jpeg;base64,inválido!!!' });
   await sleep(100);
-  assert.equal(state.messages.length, 1, 'imagem inválida não entra');
+  assert.equal(state.messages.hx.length, 1, 'imagem inválida não entra');
 });
 
 test('login ack traz allUsers (inclusive offline) e user-joined carrega avatar', async () => {
@@ -588,6 +591,44 @@ test('salas de voz: peers e sinalização isolados por sala; sala inválida recu
   const moved = await joinVoice(a, 'tibia');
   assert.equal((await left).id, a.id, 'quem ficou na akon vê ana sair');
   assert.ok(moved.peers.some((p) => p.id === b.id), 'ana agora vê beto na tibia');
+});
+
+test('servidores: trocar isola chat/membros e valida salas por servidor', async () => {
+  const a = await loggedClient('ana');   // entra no hx (padrão)
+  const b = await loggedClient('beto');
+
+  const gotHx = once(b, 'chat-message');
+  a.emit('chat-message', { text: 'oi hx' });
+  await gotHx;
+
+  const pan = await emitAck(a, 'switch-server', { server: 'panteras' });
+  assert.equal(pan.ok, true);
+  assert.equal(pan.server, 'panteras');
+  assert.equal(pan.serverName, 'Panteras');
+  assert.equal(pan.messages.length, 0, 'panteras começa vazio');
+  assert.equal(pan.voiceRooms.length, 3, 'panteras tem 3 salas');
+
+  assert.ok((await emitAck(a, 'switch-server', { server: 'nao-existe' })).error, 'servidor inválido recusado');
+
+  // msg em panteras NÃO vaza para quem está no hx
+  let leaked = false;
+  b.on('chat-message', () => { leaked = true; });
+  const c = await loggedClient('carla');
+  await emitAck(c, 'switch-server', { server: 'panteras' });
+  const gotC = once(c, 'chat-message');
+  a.emit('chat-message', { text: 'oi panteras' });
+  await gotC;
+  await sleep(80);
+  assert.equal(leaked, false, 'hx não recebe msg de panteras');
+
+  // histórico isolado por servidor
+  const backHx = await emitAck(a, 'switch-server', { server: 'hx' });
+  assert.ok(backHx.messages.some((m) => m.text === 'oi hx'), 'hx manteve sua msg');
+  assert.ok(!backHx.messages.some((m) => m.text === 'oi panteras'), 'hx não tem msg de panteras');
+
+  // sala precisa ser do servidor que estou vendo
+  assert.ok((await joinVoice(a, 'pan-1')).error, 'sala de panteras estando no hx falha');
+  assert.equal((await joinVoice(a, 'akon')).room, 'akon', 'sala do hx funciona');
 });
 
 test('sinalização: relay só entre membros do canal de voz', async () => {
