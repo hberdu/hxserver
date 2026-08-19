@@ -37,7 +37,16 @@ function hideBanner() {
 }
 
 // PWA: instalável como aplicativo (ícone na barra de endereço / menu do navegador)
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // SW novo assumiu (deploy): recarrega uma vez para rodar o código novo.
+  // No primeiro install o claim também dispara isto — aí a página já é a mais nova, só marca.
+  let hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) { hadController = true; return; }
+    location.reload();
+  });
+}
 
 let installPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -47,10 +56,11 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 $('install-btn').onclick = async () => {
   if (!installPrompt) return;
-  installPrompt.prompt();
-  await installPrompt.userChoice.catch(() => {});
-  installPrompt = null;
+  const p = installPrompt;
+  installPrompt = null; // anula antes do await: duplo clique não chama prompt() duas vezes
   $('install-btn').classList.add('hidden');
+  p.prompt();
+  await p.userChoice.catch(() => {});
 };
 
 // ---------- Avatares (foto do perfil, ou inicial com cor determinística) ----------
@@ -109,11 +119,16 @@ const SOUNDS = {
 };
 let audioCtx = null;
 
-// Destrava o áudio no primeiro clique: sem isso o contexto fica suspenso e os alertas somem
+// Destrava o áudio no primeiro clique: sem isso o contexto fica suspenso e os alertas somem.
+// Também retoma <audio> remotos bloqueados pelo autoplay: após reload + auto-rejoin (sem gesto)
+// o Chrome pausa todos — sem este play() ninguém ouviria a call até sair e re-entrar.
 document.addEventListener('click', () => {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+    document.querySelectorAll('audio[id^="audio-"]').forEach((a) => {
+      if (a.paused) a.play().catch(() => {});
+    });
   } catch { /* som é opcional */ }
 }, { capture: true });
 
@@ -172,7 +187,11 @@ function enterApp(res) {
   $('self-name').textContent = username;
   $('self-avatar').replaceChildren(avatarEl(username, 28));
   res.messages.forEach(renderMessage);
+  allNames.clear();
+  onlineNames.clear();
+  (res.allUsers || []).forEach((n) => allNames.add(n));
   res.users.forEach((user) => addUser(user.id, user.username));
+  renderOffline();
   res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted, user.deafened));
   res.sharers.forEach((s) => {
     sharers.set(s.id, { username: s.username, thumb: s.thumb });
@@ -208,16 +227,16 @@ $('chat-form').onsubmit = (e) => {
 let lastAuthor = null;
 let lastTs = 0;
 
-function renderMessage({ username: author, text, ts }) {
-  const compact = author === lastAuthor && ts - lastTs < 5 * 60 * 1000;
-  lastAuthor = author;
-  lastTs = ts;
-  const div = document.createElement('div');
-  div.className = compact ? 'message compact' : 'message';
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  const textDiv = document.createElement('div');
-  textDiv.className = 'text';
-  // Links clicáveis: só createElement/append, nunca innerHTML (sem risco de XSS)
+function mentionsMe(text) {
+  // Boundary dos dois lados: "admin@ana.com" não é menção a @ana
+  return !!username && new RegExp('(?<![\\w])@' + escapeRegex(username) + '(?![\\w])', 'i').test(text);
+}
+
+// Links clicáveis: só createElement/append, nunca innerHTML (sem risco de XSS)
+function fillText(textDiv, text) {
+  textDiv.replaceChildren();
   text.split(/(https?:\/\/[^\s]+)/g).forEach((part, i) => {
     if (i % 2) {
       const a = document.createElement('a');
@@ -230,10 +249,32 @@ function renderMessage({ username: author, text, ts }) {
       textDiv.append(part);
     }
   });
+}
 
-  if (compact) {
-    div.appendChild(textDiv);
-  } else {
+function markEdited(div) {
+  if (div.querySelector('.edited')) return;
+  const tag = document.createElement('span');
+  tag.className = 'edited';
+  tag.textContent = '(editado)';
+  div.querySelector('.text').after(tag);
+}
+
+function renderMessage({ id, username: author, text, ts, img, edited }) {
+  const compact = author === lastAuthor && ts - lastTs < 5 * 60 * 1000;
+  lastAuthor = author;
+  lastTs = ts;
+  const div = document.createElement('div');
+  div.className = compact ? 'message compact' : 'message';
+  if (id != null) div.dataset.id = id;
+  div.dataset.author = author;
+  if (mentionsMe(text) && author !== username) div.classList.add('mention');
+
+  const textDiv = document.createElement('div');
+  textDiv.className = 'text';
+  fillText(textDiv, text);
+
+  let holder = div; // onde texto/imagem entram (no modo normal é o .body)
+  if (!compact) {
     const d = new Date(ts);
     // Histórico pode ter dias: mensagem de outro dia mostra a data junto da hora
     const time = (d.toDateString() === new Date().toDateString() ? ''
@@ -247,14 +288,98 @@ function renderMessage({ username: author, text, ts }) {
     const timeSpan = document.createElement('span');
     timeSpan.className = 'time';
     timeSpan.textContent = time;
+    timeSpan.title = d.toLocaleString('pt-BR');
     meta.append(authorSpan, timeSpan);
-    const body = document.createElement('div');
-    body.className = 'body';
-    body.append(meta, textDiv);
-    div.append(avatarEl(author, 36), body);
+    holder = document.createElement('div');
+    holder.className = 'body';
+    holder.append(meta);
+    div.append(avatarEl(author, 36), holder);
+  } else {
+    div.title = new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+  holder.appendChild(textDiv);
+  if (edited) markEdited(div);
+
+  if (typeof img === 'string' && img.startsWith('data:image/')) {
+    const im = document.createElement('img');
+    im.className = 'chat-img';
+    im.src = img;
+    im.title = 'Clique para ampliar';
+    im.onclick = () => im.requestFullscreen?.().catch(() => {});
+    // Imagem carrega depois do append e empurra o scroll: cola no fundo se estávamos perto dele
+    im.onload = () => {
+      const m = $('messages');
+      if (m.scrollHeight - m.scrollTop - m.clientHeight < 80 + im.offsetHeight) scrollMessages();
+    };
+    holder.appendChild(im);
+  }
+
+  // Ações (editar/apagar) só nas próprias mensagens
+  if (author === username && id != null) {
+    const actions = document.createElement('span');
+    actions.className = 'msg-actions';
+    actions.append(
+      tileButton('edit', 'Editar mensagem', () => startEditMessage(div)),
+      tileButton('trash', 'Apagar mensagem', () => {
+        if (!confirm('Apagar esta mensagem?')) return;
+        socket.emit('delete-message', { id }, (res) => {
+          if (!res || res.error) systemMessage((res && res.error) || 'Falha ao apagar.');
+        });
+      })
+    );
+    div.appendChild(actions);
   }
   $('messages').appendChild(div);
 }
+
+// Edição inline: Enter salva, Esc ou clicar fora cancela
+function startEditMessage(div) {
+  const textDiv = div.querySelector('.text');
+  const original = textDiv.textContent;
+  try { textDiv.contentEditable = 'plaintext-only'; } catch { textDiv.contentEditable = 'true'; }
+  textDiv.focus();
+  const finish = (save) => {
+    textDiv.onkeydown = null;
+    textDiv.onblur = null;
+    textDiv.contentEditable = 'false';
+    const t = textDiv.textContent.trim();
+    if (!save || !t || t === original) { fillText(textDiv, original); return; }
+    socket.emit('edit-message', { id: Number(div.dataset.id), text: t }, (res) => {
+      if (!res || res.error) {
+        fillText(textDiv, original);
+        systemMessage((res && res.error) || 'Falha ao editar.');
+      }
+    });
+  };
+  textDiv.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.stopPropagation(); finish(false); }
+  };
+  textDiv.onblur = () => finish(false);
+}
+
+socket.on('message-edited', ({ id, text } = {}) => {
+  const div = document.querySelector('.message[data-id="' + Number(id) + '"]');
+  if (!div || typeof text !== 'string') return;
+  fillText(div.querySelector('.text'), text);
+  div.classList.toggle('mention', div.dataset.author !== username && mentionsMe(text));
+  markEdited(div);
+});
+
+socket.on('message-deleted', ({ id } = {}) => {
+  const div = document.querySelector('.message[data-id="' + Number(id) + '"]');
+  if (!div) return;
+  // Mantém o div (pode ser o cabeçalho de um grupo compacto): só troca o conteúdo
+  const textDiv = div.querySelector('.text');
+  textDiv.replaceChildren();
+  const i = document.createElement('i');
+  i.className = 'deleted';
+  i.textContent = 'mensagem apagada';
+  textDiv.appendChild(i);
+  div.querySelector('.chat-img')?.remove();
+  div.querySelector('.edited')?.remove();
+  div.querySelector('.msg-actions')?.remove();
+});
 
 function systemMessage(text) {
   lastAuthor = null; // aviso de sistema quebra o agrupamento visual
@@ -263,7 +388,7 @@ function systemMessage(text) {
   div.className = 'message system';
   div.textContent = text;
   $('messages').appendChild(div);
-  if (stick) scrollMessages();
+  if (stick) { scrollMessages(); trimMessages(); }
 }
 
 function scrollMessages() {
@@ -286,16 +411,62 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// DOM com teto: sessão aberta por dias não acumula milhares de divs (histórico do servidor é 100)
+const MAX_DOM_MESSAGES = 300;
+function trimMessages() {
+  const m = $('messages');
+  while (m.children.length > MAX_DOM_MESSAGES) m.firstChild.remove();
+}
+
 socket.on('chat-message', (msg) => {
   const stick = nearBottom() || msg.username === username; // mensagem própria sempre rola
   renderMessage(msg);
-  if (stick) scrollMessages();
+  if (stick) { scrollMessages(); trimMessages(); }
   clearTyping(msg.username); // a mensagem chegou: some o "está digitando"
+  const mentioned = msg.username !== username && mentionsMe(msg.text);
   if (document.hidden && msg.username !== username) {
     unread++;
     document.title = '(' + unread + ') HX Chat';
     playSound('notify');
+  } else if (mentioned) {
+    playSound('notify'); // @menção toca mesmo com a aba visível
   }
+});
+
+// Mensagem cortada pelo anti-flood não pode sumir muda
+let lastRateWarn = 0;
+socket.on('rate-limited', ({ event } = {}) => {
+  if (event !== 'chat-message' || Date.now() - lastRateWarn < 3000) return;
+  lastRateWarn = Date.now();
+  systemMessage('Você está enviando mensagens rápido demais — aguarde um instante.');
+});
+
+// Colar print (Ctrl+V) no campo de mensagem envia a imagem
+$('chat-input').addEventListener('paste', async (e) => {
+  const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'));
+  if (!item) return;
+  e.preventDefault();
+  const file = item.getAsFile();
+  if (!file) return;
+  let img;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    img = canvas.toDataURL('image/jpeg', 0.8);
+    if (img.length > 200 * 1024) img = canvas.toDataURL('image/jpeg', 0.6);
+    if (img.length > 200 * 1024) { systemMessage('Imagem grande demais.'); return; }
+  } catch {
+    systemMessage('Não consegui ler essa imagem.');
+    return;
+  }
+  socket.emit('chat-message', { text: $('chat-input').value.trim(), img });
+  $('chat-input').value = '';
 });
 
 // ---------- "Fulano está digitando…" ----------
@@ -331,7 +502,10 @@ function renderTyping() {
     names.length + ' pessoas estão digitando…';
 }
 
-// ---------- Lista de usuários ----------
+// ---------- Lista de usuários (Online + Offline, como no Discord) ----------
+const allNames = new Set();    // toda conta registrada
+const onlineNames = new Set(); // quem está conectado agora
+
 function addUser(id, name) {
   if (document.getElementById('user-' + id)) return;
   const li = document.createElement('li');
@@ -340,14 +514,42 @@ function addUser(id, name) {
   span.textContent = name;
   li.append(avatarEl(name, 26), span);
   $('user-list').appendChild(li);
+  allNames.add(name);
+  onlineNames.add(name);
 }
 
-socket.on('user-joined', ({ id, username: name }) => { addUser(id, name); systemMessage(name + ' entrou no servidor'); });
+function renderOffline() {
+  $('online-label').textContent = 'Online — ' + onlineNames.size;
+  const off = [...allNames].filter((n) => !onlineNames.has(n)).sort((a, b) => a.localeCompare(b));
+  $('offline-label').textContent = 'Offline — ' + off.length;
+  $('offline-label').classList.toggle('hidden', off.length === 0);
+  $('offline-list').replaceChildren(...off.map((n) => {
+    const li = document.createElement('li');
+    li.className = 'offline';
+    const span = document.createElement('span');
+    span.textContent = n;
+    li.append(avatarEl(n, 26), span);
+    return li;
+  }));
+}
+
+socket.on('user-joined', ({ id, username: name, avatar }) => {
+  if (typeof avatar === 'string') { avatares.set(name, avatar); refreshAvatars(name); }
+  addUser(id, name);
+  renderOffline();
+  systemMessage(name + ' entrou no servidor');
+});
+
 socket.on('user-left', ({ id, username: name }) => {
   document.getElementById('user-' + id)?.remove();
   removeVoiceUser(id);
   removePeer(id);
   sharerGone(id);
+  onlineNames.delete(name);
+  clearTyping(name); // "está digitando…" de quem saiu não fica pendurado
+  renderOffline();
+  // Libera a foto da memória se não está mais em nenhum avatar renderizado
+  if (name && !document.querySelector('.avatar[data-name="' + CSS.escape(name) + '"]')) avatares.delete(name);
   systemMessage(name + ' saiu do servidor');
 });
 
@@ -426,6 +628,26 @@ $('mute-btn').onclick = toggleMute;
 $('deafen-btn').onclick = toggleDeafen;
 $('screen-btn').onclick = toggleScreen;
 
+// ---------- Push-to-talk (segurar a tecla para falar; só com a aba focada — limite do navegador)
+let pttOn = localStorage.getItem('hx-ptt') === 'on';
+let pttKey = localStorage.getItem('hx-ptt-key') || 'Backquote';
+
+$('ptt-toggle').onchange = () => {
+  pttOn = $('ptt-toggle').checked;
+  localStorage.setItem('hx-ptt', pttOn ? 'on' : 'off');
+  $('ptt-key-row').classList.toggle('hidden', !pttOn);
+  if (inVoice && !deafened) setMuted(pttOn, false); // ligou: mic fecha e espera a tecla
+};
+
+$('ptt-key').onkeydown = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  pttKey = e.code;
+  localStorage.setItem('hx-ptt-key', pttKey);
+  $('ptt-key').value = pttKey;
+  $('ptt-key').blur();
+};
+
 // Atalhos: Esc fecha modais; Ctrl+Shift+M muta; Ctrl+Shift+D silencia (como no Discord)
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
@@ -437,8 +659,19 @@ document.addEventListener('keydown', (e) => {
   } else if (e.ctrlKey && e.shiftKey && e.code === 'KeyD') {
     e.preventDefault();
     toggleDeafen();
+  } else if (pttOn && inVoice && !deafened && e.code === pttKey && !e.repeat && !isTypingTarget(e.target)) {
+    setMuted(false, false); // tecla pressionada: fala
   }
 });
+
+document.addEventListener('keyup', (e) => {
+  if (pttOn && inVoice && !deafened && e.code === pttKey && !isTypingTarget(e.target)) setMuted(true, false);
+});
+
+// PTT não dispara enquanto se digita (tecla configurada como Enter/letra escreveria E mutaria)
+function isTypingTarget(el) {
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+}
 
 // Menu hambúrguer (mobile): sidebar vira gaveta
 $('menu-btn').onclick = (e) => {
@@ -469,6 +702,7 @@ async function joinVoice() {
     }
     $('voice-controls').classList.remove('hidden');
     addVoiceUser(selfId, username);
+    if (pttOn) setMuted(true, false); // push-to-talk: entra mutado esperando a tecla
     attachSpeaking(selfId, localStream);
     playSound('userJoin'); // toca também para quem entrou, não só para quem já estava
     sessionStorage.setItem('hx-in-voice', '1'); // volta pra call sozinho se cair
@@ -646,7 +880,15 @@ function getPeer(peerId) {
   if (peers.has(peerId)) return peers.get(peerId);
 
   const pc = new RTCPeerConnection(RTC_CONFIG);
-  const state = { pc, makingOffer: false, ignoreOffer: false, polite: selfId < peerId };
+  const state = {
+    pc,
+    makingOffer: false,
+    ignoreOffer: false,
+    settingRemoteAnswer: false, // negociação perfeita canônica: sem isto, offer legítima vira "colisão"
+    polite: selfId < peerId,
+    screenSender: null,         // sender de tela reutilizado via replaceTrack (m-lines não crescem)
+    restarts: 0,                // limite de ICE restart: só STUN, par inalcançável não loopa para sempre
+  };
   peers.set(peerId, state);
 
   localStream?.getTracks().forEach((t) => pc.addTrack(t, localStream));
@@ -688,8 +930,16 @@ function getPeer(peerId) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') pc.restartIce(); // re-oferta flui pela negociação perfeita
-    else if (pc.connectionState === 'closed') removePeer(peerId);
+    if (pc.connectionState === 'connected') state.restarts = 0;
+    else if (pc.connectionState === 'failed') {
+      if (++state.restarts <= 3) pc.restartIce(); // re-oferta flui pela negociação perfeita
+      else systemMessage('Não foi possível conectar com ' + voiceUserName(peerId) + ' (rede restritiva).');
+    } else if (pc.connectionState === 'closed') removePeer(peerId);
+  };
+
+  // Negociação fechou: aplica bitrate/degradation nos senders (substitui o retry cego de 2s)
+  pc.onsignalingstatechange = () => {
+    if (pc.signalingState === 'stable') retuneSenders();
   };
 
   return state;
@@ -713,11 +963,17 @@ socket.on('signal', async ({ from, data }) => {
   const { pc } = state;
   try {
     if (data.description) {
-      const offerCollision = data.description.type === 'offer' &&
-        (state.makingOffer || pc.signalingState !== 'stable');
+      // readyForOffer inclui settingRemoteAnswer: enquanto a answer anterior aplica, o estado
+      // ainda é have-local-offer — sem a flag, a offer legítima seguinte seria descartada e o
+      // peer polido ficaria preso (nenhuma renegociação futura funcionaria)
+      const readyForOffer = !state.makingOffer &&
+        (pc.signalingState === 'stable' || state.settingRemoteAnswer);
+      const offerCollision = data.description.type === 'offer' && !readyForOffer;
       state.ignoreOffer = !state.polite && offerCollision;
       if (state.ignoreOffer) return;
+      state.settingRemoteAnswer = data.description.type === 'answer';
       await pc.setRemoteDescription(data.description);
+      state.settingRemoteAnswer = false;
       if (data.description.type === 'offer') {
         await pc.setLocalDescription();
         socket.emit('signal', { to: from, data: { description: pc.localDescription } });
@@ -772,9 +1028,7 @@ function stopScreen(sound = true) {
   if (!screenStream) return;
   clearInterval(thumbTimer);
   thumbTimer = null;
-  viewerSenders.forEach((sender, viewerId) => {
-    try { peers.get(viewerId)?.pc.removeTrack(sender); } catch { /* pc já fechado */ }
-  });
+  viewerSenders.forEach((sender) => sender.replaceTrack(null).catch(() => {}));
   viewerSenders.clear();
   screenStream.getTracks().forEach((t) => t.stop());
   screenStream = null;
@@ -826,18 +1080,23 @@ socket.on('watch-request', ({ from } = {}) => {
   // getPeer (não peers.get): logo após reload do espectador o pc dele pode ainda não existir
   // aqui — descartaria o pedido e ele ficaria em "Parar de assistir" sem vídeo nunca chegar
   const peer = getPeer(from);
-  const sender = peer.pc.addTrack(screenStream.getVideoTracks()[0], screenStream);
-  viewerSenders.set(from, sender);
-  preferBestCodec(peer.pc, sender);
-  retuneSenders();
-  setTimeout(retuneSenders, 2000); // encodings só existem após a negociação completar
+  const track = screenStream.getVideoTracks()[0];
+  if (peer.screenSender) {
+    // Reuso do sender: replaceTrack não renegocia nem cria m-line nova (SDP não cresce)
+    peer.screenSender.replaceTrack(track).catch(() => {});
+  } else {
+    peer.screenSender = peer.pc.addTrack(track, screenStream);
+    preferBestCodec(peer.pc, peer.screenSender);
+  }
+  viewerSenders.set(from, peer.screenSender);
+  retuneSenders(); // encodings tardios: onsignalingstatechange re-aplica quando fechar
 });
 
 socket.on('watch-stop', ({ from } = {}) => {
   const sender = viewerSenders.get(from);
   if (!sender) return;
   viewerSenders.delete(from);
-  try { peers.get(from)?.pc.removeTrack(sender); } catch { /* pc já fechado */ }
+  sender.replaceTrack(null).catch(() => {}); // corta o vídeo sem renegociação
   retuneSenders(); // sobrou banda para os que ficaram
 });
 
@@ -949,6 +1208,9 @@ $('user-footer').onclick = () => {
   $('profile-display-name').textContent = username;
   $('rename-input').value = username;
   $('noise-toggle').checked = noiseSuppression;
+  $('ptt-toggle').checked = pttOn;
+  $('ptt-key').value = pttKey;
+  $('ptt-key-row').classList.toggle('hidden', !pttOn);
   $('profile-error').textContent = '';
   $('profile-ok').textContent = '';
   $('profile-overlay').classList.remove('hidden');
@@ -968,6 +1230,11 @@ $('avatar-remove').onclick = () => {
 function applyRename(id, oldName, newName) {
   const photo = avatares.get(oldName);
   if (photo) { avatares.set(newName, photo); avatares.delete(oldName); }
+  allNames.delete(oldName);
+  allNames.add(newName);
+  if (onlineNames.delete(oldName)) onlineNames.add(newName);
+  renderOffline();
+  clearTyping(oldName); // evita "oldName e newName estão digitando" da mesma pessoa
   const userLi = document.getElementById('user-' + id);
   if (userLi) {
     const span = document.createElement('span');
@@ -978,6 +1245,15 @@ function applyRename(id, oldName, newName) {
   if (voiceLi) {
     voiceLi.querySelector('.name').textContent = newName;
     voiceLi.querySelector('.avatar').replaceWith(avatarEl(newName, 24));
+    const vol = voiceLi.querySelector('.vol-slider');
+    if (vol) {
+      vol.title = 'Volume de ' + newName;
+      const saved = localStorage.getItem('hx-vol-' + oldName);
+      if (saved !== null) {
+        localStorage.setItem('hx-vol-' + newName, saved); // ajuste sobrevive ao rename
+        localStorage.removeItem('hx-vol-' + oldName);
+      }
+    }
   }
   const sharer = sharers.get(id);
   if (sharer) sharer.username = newName;
@@ -1000,6 +1276,8 @@ $('rename-save').onclick = () => {
     $('self-name').textContent = username;
     $('self-avatar').replaceChildren(avatarEl(username, 28));
     renderProfileAvatar();
+    $('profile-display-name').textContent = username; // cabeçalho do modal aberto acompanha
+    $('rename-input').value = username;               // nome canônico do servidor ("ANA" -> "ana")
     $('profile-error').textContent = '';
   });
 };

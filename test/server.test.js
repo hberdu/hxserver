@@ -326,6 +326,80 @@ test('chat: mensagem persiste no banco (histórico sobrevive a restart)', async 
   assert.equal(rows[0].text, 'persistente');
 });
 
+test('editar/apagar mensagem: só o autor consegue; propaga e atualiza banco/estado', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+
+  const got = once(b, 'chat-message');
+  a.emit('chat-message', { text: 'original' });
+  const msg = await got;
+  assert.ok(Number.isInteger(msg.id), 'mensagem carrega id');
+
+  assert.ok((await emitAck(b, 'edit-message', { id: msg.id, text: 'hackeada' })).error, 'editar de outro falha');
+  assert.ok((await emitAck(b, 'delete-message', { id: msg.id })).error, 'apagar de outro falha');
+
+  const edited = once(b, 'message-edited');
+  assert.equal((await emitAck(a, 'edit-message', { id: msg.id, text: 'corrigida' })).ok, true);
+  const ev = await edited;
+  assert.equal(ev.id, msg.id);
+  assert.equal(ev.text, 'corrigida');
+  assert.equal(db.prepare('SELECT text, edited FROM messages WHERE id = ?').get(msg.id).text, 'corrigida');
+  assert.equal(state.messages.find((m) => m.id === msg.id).text, 'corrigida');
+
+  const deleted = once(b, 'message-deleted');
+  assert.equal((await emitAck(a, 'delete-message', { id: msg.id })).ok, true);
+  assert.equal((await deleted).id, msg.id);
+  assert.equal(db.prepare('SELECT 1 FROM messages WHERE id = ?').get(msg.id), undefined);
+  assert.ok(!state.messages.some((m) => m.id === msg.id));
+});
+
+test('chat com imagem: válida propaga e persiste; inválida é descartada', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+
+  const got = once(b, 'chat-message');
+  a.emit('chat-message', { text: '', img: 'data:image/jpeg;base64,AAAA' });
+  const msg = await got;
+  assert.equal(msg.img, 'data:image/jpeg;base64,AAAA');
+  assert.equal(db.prepare('SELECT img FROM messages WHERE id = ?').get(msg.id).img, 'data:image/jpeg;base64,AAAA');
+
+  a.emit('chat-message', { text: '', img: 'data:text/html;base64,x' });
+  a.emit('chat-message', { text: '', img: 'data:image/jpeg;base64,inválido!!!' });
+  await sleep(100);
+  assert.equal(state.messages.length, 1, 'imagem inválida não entra');
+});
+
+test('login ack traz allUsers (inclusive offline) e user-joined carrega avatar', async () => {
+  const a = await loggedClient('ana');
+  await emitAck(a, 'set-avatar', { img: 'data:image/jpeg;base64,AAAA' });
+  a.disconnect();
+  await sleep(80);
+
+  const b = await loggedClient('beto');
+  const rejoined = once(b, 'user-joined');
+  const a2 = await connect();
+  const res = await emitAck(a2, 'login', { username: 'ana', password: 'senha123' });
+  assert.ok(res.allUsers.includes('ana') && res.allUsers.includes('beto'), 'todos os registrados no ack');
+  assert.equal((await rejoined).avatar, 'data:image/jpeg;base64,AAAA', 'quem entra chega com a própria foto');
+});
+
+test('signal: payload gigante é descartado', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  await joinVoice(a);
+  await joinVoice(b);
+
+  let leaked = false;
+  b.on('signal', () => { leaked = true; });
+  a.emit('signal', { to: b.id, data: { blob: 'x'.repeat(64 * 1024) } });
+  await sleep(100);
+  assert.equal(leaked, false, 'sinal de 64KB não pode ser retransmitido');
+
+  const got = once(b, 'signal');
+  a.emit('signal', { to: b.id, data: { description: { type: 'offer', sdp: 'x' } } });
+  assert.equal((await got).from, a.id, 'sinal normal segue passando');
+});
+
 test('typing: retransmite para os outros, não para quem digita nem sem login', async () => {
   const a = await loggedClient('ana');
   const b = await loggedClient('beto');

@@ -43,8 +43,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS messages (
   text TEXT NOT NULL,
   ts INTEGER NOT NULL
 )`);
-const insertMsg = db.prepare('INSERT INTO messages (username, text, ts) VALUES (?, ?, ?)');
+try { db.exec('ALTER TABLE messages ADD COLUMN img TEXT'); } catch { /* coluna já existe */ }
+try { db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER'); } catch { /* coluna já existe */ }
+const insertMsg = db.prepare('INSERT INTO messages (username, text, ts, img) VALUES (?, ?, ?, ?)');
 const trimMsgs = db.prepare('DELETE FROM messages WHERE id <= (SELECT MAX(id) FROM messages) - ?');
+const updateMsg = db.prepare('UPDATE messages SET text = ?, edited = 1 WHERE id = ? AND username = ?');
+const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ? AND username = ?');
+const renameMsgs = db.prepare('UPDATE messages SET username = ? WHERE username = ?');
+const allUsernames = db.prepare('SELECT username FROM users');
 
 const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
@@ -107,8 +113,8 @@ const SERVER_NAME = 'HX';
 const MAX_HISTORY = 100;
 const state = {
   users: new Map(),    // socketId -> username
-  messages: db.prepare(`SELECT username, text, ts FROM
-    (SELECT id, username, text, ts FROM messages ORDER BY id DESC LIMIT ${MAX_HISTORY}) ORDER BY id ASC`).all(),
+  messages: db.prepare(`SELECT id, username, text, ts, img, edited FROM
+    (SELECT * FROM messages ORDER BY id DESC LIMIT ${MAX_HISTORY}) ORDER BY id ASC`).all(),
   voice: new Set(),    // socketIds no canal de voz
   muted: new Set(),    // socketIds mutados
   deafened: new Set(), // socketIds com o canal silenciado (não ouvem ninguém)
@@ -125,8 +131,10 @@ const MAX_THUMB = 200 * 1024; // ~200KB por thumbnail
 const MAX_AVATAR = 100 * 1024; // ~100KB por foto de perfil
 
 function validImage(img, max) {
-  return typeof img === 'string' && img.length <= max &&
-    (img.startsWith('data:image/jpeg;base64,') || img.startsWith('data:image/webp;base64,') || img.startsWith('data:image/png;base64,'));
+  if (typeof img !== 'string' || img.length > max) return false;
+  // Valida também o corpo base64: sem isso, lixo arbitrário persiste como avatar/thumb quebrado
+  const m = img.match(/^data:image\/(?:jpeg|webp|png);base64,([A-Za-z0-9+/]+={0,2})$/);
+  return !!m && m[1].length % 4 === 0;
 }
 
 function cleanCreds(payload) {
@@ -143,12 +151,16 @@ function userList() {
   return [...state.users.entries()].map(([id, username]) => ({ id, username }));
 }
 
-// Anti-flood: custo em tokens por evento; eventos ausentes (sinalização WebRTC) são livres.
+// Anti-flood: custo em tokens por evento.
 // Bucket de 60 por socket, recarga 6/s: chat normal nunca esbarra, loop de spam esbarra em ~1s.
+// signal custa 0.2: rajada legítima de ICE (entrar numa mesh cheia) passa; flood contínuo não.
 const RATE_COST = {
   register: 20, login: 20, resume: 5,          // scrypt caro: limita brute-force e DoS de threadpool
-  'chat-message': 2, typing: 1,
+  'chat-message': 2, typing: 1, 'edit-message': 2, 'delete-message': 2,
   'screen-thumb': 5, 'set-avatar': 10, rename: 10, // thumb legítimo é 1 a cada 3s: folga de sobra
+  signal: 0.2,
+  watch: 1, unwatch: 1, 'join-voice': 1, 'leave-voice': 1,
+  'set-muted': 1, 'set-deafened': 1, 'screen-share': 1,
 };
 const RATE_MAX = 60;
 const RATE_REFILL = 6; // tokens por segundo
@@ -166,6 +178,7 @@ io.on('connection', (socket) => {
       if (rateTokens < cost) {
         const ack = args[args.length - 1];
         if (typeof ack === 'function') ack({ error: 'Muitas ações em pouco tempo. Aguarde um instante.' });
+        else socket.emit('rate-limited', { event }); // sem ack: avisa para a mensagem não sumir muda
         return;
       }
       rateTokens -= cost;
@@ -211,10 +224,10 @@ io.on('connection', (socket) => {
     username = name;
     state.users.set(socket.id, username);
     socket.join(SERVER_NAME);
-    // Fotos de perfil de quem está online e de quem aparece no histórico
-    const names = new Set([...state.users.values(), ...state.messages.map((m) => m.username)]);
+    // Só fotos de quem está online: histórico com blobs de todo mundo inflava o ack a centenas
+    // de KB por login/reconexão. Quem entra depois chega com a própria foto no 'user-joined'.
     const avatars = {};
-    for (const n of names) {
+    for (const n of new Set(state.users.values())) {
       const row = getAvatar.get(n);
       if (row && row.avatar) avatars[n] = row.avatar;
     }
@@ -227,10 +240,12 @@ io.on('connection', (socket) => {
       username, // nome canônico do banco (login "ANA" -> "ana")
       messages: state.messages,
       users: userList(),
+      allUsers: allUsernames.all().map((r) => r.username), // lista de membros com seção offline
       voiceUsers: [...state.voice].map((id) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id) })),
       sharers: [...state.sharing].map((id) => ({ id, username: state.users.get(id), thumb: state.thumbs.get(id) || null })),
     });
-    socket.to(SERVER_NAME).emit('user-joined', { id: socket.id, username });
+    const own = getAvatar.get(username);
+    socket.to(SERVER_NAME).emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
   }
 
   on('register', async (payload, ack) => {
@@ -297,6 +312,7 @@ io.on('connection', (socket) => {
       // 0 linhas = closure aponta para nome que não existe mais no banco (sessão dessincronizada)
       if (renameUser.run(name, username).changes === 0) return ack({ error: 'Sessão desatualizada. Recarregue a página.' });
       renameSessions.run(name, username); // sessões existentes continuam válidas
+      renameMsgs.run(name, username);     // histórico segue editável e com avatar após o rename
     } catch {
       return ack({ error: 'Esse nome já existe.' });
     }
@@ -310,13 +326,44 @@ io.on('connection', (socket) => {
   on('chat-message', (payload) => {
     if (!loggedIn()) return;
     const text = payload && typeof payload.text === 'string' ? payload.text.trim() : '';
-    if (!text || text.length > MAX_MSG) return;
-    const msg = { username, text, ts: Date.now() };
+    const img = payload && payload.img;
+    const hasImg = img !== undefined && img !== null;
+    if (hasImg && !validImage(img, MAX_THUMB)) return;
+    if ((!text && !hasImg) || text.length > MAX_MSG) return;
+    const ts = Date.now();
+    const info = insertMsg.run(username, text, ts, hasImg ? img : null);
+    const msg = { id: Number(info.lastInsertRowid), username, text, ts };
+    if (hasImg) msg.img = img;
     state.messages.push(msg);
     if (state.messages.length > MAX_HISTORY) state.messages.shift();
-    insertMsg.run(username, text, msg.ts);
     trimMsgs.run(MAX_HISTORY);
     io.to(SERVER_NAME).emit('chat-message', msg);
+  });
+
+  // Editar/apagar: o WHERE username=? garante que só o autor mexe na própria mensagem
+  on('edit-message', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
+    const id = payload && payload.id;
+    const text = payload && typeof payload.text === 'string' ? payload.text.trim() : '';
+    if (!Number.isInteger(id) || !text || text.length > MAX_MSG) return ack({ error: 'Mensagem inválida.' });
+    if (updateMsg.run(text, id, username).changes === 0) return ack({ error: 'Só dá para editar as próprias mensagens.' });
+    const m = state.messages.find((x) => x.id === id);
+    if (m) { m.text = text; m.edited = 1; }
+    ack({ ok: true });
+    io.to(SERVER_NAME).emit('message-edited', { id, text });
+  });
+
+  on('delete-message', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
+    const id = payload && payload.id;
+    if (!Number.isInteger(id)) return ack({ error: 'Mensagem inválida.' });
+    if (deleteMsg.run(id, username).changes === 0) return ack({ error: 'Só dá para apagar as próprias mensagens.' });
+    const i = state.messages.findIndex((x) => x.id === id);
+    if (i !== -1) state.messages.splice(i, 1);
+    ack({ ok: true });
+    io.to(SERVER_NAME).emit('message-deleted', { id });
   });
 
   // "Fulano está digitando…" — volatile: pode se perder na reconexão sem fazer falta
@@ -370,10 +417,12 @@ io.on('connection', (socket) => {
 
   on('leave-voice', leaveVoice);
 
-  // Relay de sinalização WebRTC: só entre membros do canal de voz
+  // Relay de sinalização WebRTC: só entre membros do canal de voz.
+  // Teto de 32KB: SDP real tem poucos KB; sem isso o relay vira amplificador de banda (300KB/frame)
   on('signal', (payload) => {
     const { to, data } = payload || {};
-    if (!loggedIn() || typeof to !== 'string') return;
+    if (!loggedIn() || typeof to !== 'string' || !data || typeof data !== 'object') return;
+    if (JSON.stringify(data).length > 32 * 1024) return;
     if (!state.voice.has(socket.id) || !state.voice.has(to)) return;
     io.to(to).emit('signal', { from: socket.id, data });
   });

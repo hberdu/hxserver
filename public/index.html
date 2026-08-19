@@ -90,8 +90,10 @@
     </main>
 
     <aside class="members">
-      <div class="channel-label">Online</div>
+      <div class="channel-label" id="online-label">Online</div>
       <ul id="user-list"></ul>
+      <div class="channel-label hidden" id="offline-label">Offline</div>
+      <ul id="offline-list"></ul>
     </aside>
   </div>
 
@@ -149,6 +151,16 @@
           </span>
           <input id="noise-toggle" type="checkbox" checked>
         </label>
+        <label class="toggle-row">
+          <span>
+            Push-to-talk
+            <span class="section-hint">Segure a tecla para falar, solte para mutar. Funciona com a aba em foco.</span>
+          </span>
+          <input id="ptt-toggle" type="checkbox">
+        </label>
+        <div class="rename-row hidden" id="ptt-key-row">
+          <input id="ptt-key" type="text" readonly placeholder="Clique aqui e pressione a tecla">
+        </div>
       </section>
 
       <div id="profile-error" class="error"></div>

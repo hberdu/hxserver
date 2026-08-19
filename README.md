@@ -12,8 +12,9 @@ npm start
 Abra http://localhost:3000, crie uma conta (usuário + senha) e entre.
 
 - **Conta**: senha guardada no SQLite apenas como hash scrypt + salt único — irreversível, nenhum dev consegue ler a senha.
-- **Chat**: #geral, histórico das últimas 100 mensagens persistido no SQLite (sobrevive a restart). Links clicáveis, mensagens seguidas agrupadas, indicador "fulano está digitando…", contador de não lidas no título da aba com som de alerta.
-- **Voz**: clique em "Voz" e permita o microfone. Áudio P2P (WebRTC mesh). Mutar (Ctrl+Shift+M) e silenciar o canal (Ctrl+Shift+D) com indicadores visíveis para todos (mic + headset, como no Discord); volume individual por participante (aparece no hover); sons sintetizados (WebAudio) para os eventos da call.
+- **Chat**: #geral, histórico das últimas 100 mensagens persistido no SQLite (sobrevive a restart). Editar/apagar as próprias mensagens, colar print com Ctrl+V, @menção com destaque e som, links clicáveis, mensagens seguidas agrupadas, indicador "fulano está digitando…", contador de não lidas no título da aba com som de alerta.
+- **Membros**: lista com seções Online/Offline e contagem (todas as contas do servidor aparecem).
+- **Voz**: clique em "Voz" e permita o microfone. Áudio P2P (WebRTC mesh). Mutar (Ctrl+Shift+M), silenciar o canal (Ctrl+Shift+D) e push-to-talk opcional (tecla configurável no perfil) com indicadores visíveis para todos (mic + headset, como no Discord); volume individual por participante (aparece no hover); sons sintetizados (WebAudio) para os eventos da call.
 - **Transmitir tela**: dentro da voz, botão de monitor — o seletor do navegador oferece tela inteira, janela ou aplicativo aberto (mesmo mecanismo do Discord).
 - **Assistir**: quem transmite ganha o badge vermelho **AO VIVO** ao lado do nome no canal de voz. Clique no badge para ver a prévia (atualizada a cada 3s) e então **Assistir** — o vídeo só é enviado a quem assiste.
 - Outra pessoa na mesma rede: http://SEU_IP:3000 (mic/tela fora de localhost exigem HTTPS).

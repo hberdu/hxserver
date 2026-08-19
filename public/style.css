@@ -79,7 +79,17 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .screen-tile .controls .icon { width: 15px; height: 15px; }
 
 .messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-.message { display: flex; gap: 12px; }
+.message { display: flex; gap: 12px; position: relative; }
+.message.mention { background: rgba(240, 178, 50, .08); border-left: 2px solid #f0b232; border-radius: 2px; }
+.message .edited { color: #949ba4; font-size: 10px; }
+.message .deleted { color: #949ba4; }
+.message .chat-img { max-width: min(420px, 100%); max-height: 280px; border-radius: 6px; display: block; margin-top: 4px; cursor: pointer; background: #000; }
+.msg-actions { position: absolute; top: -6px; right: 8px; display: none; gap: 4px; background: #2b2d31; border-radius: 6px; padding: 2px; }
+.message:hover .msg-actions { display: flex; }
+.msg-actions button { border: none; background: none; color: #b5bac1; border-radius: 4px; cursor: pointer; padding: 3px 6px; }
+.msg-actions button:hover { color: #fff; background: #404249; }
+.msg-actions .icon { width: 14px; height: 14px; }
+.message .text[contenteditable="plaintext-only"], .message .text[contenteditable="true"] { outline: 1px solid #5865f2; border-radius: 4px; padding: 2px 4px; background: #383a40; }
 .message .body { min-width: 0; }
 .message .meta { font-size: 13px; }
 .message .meta .author { color: #fff; font-weight: 600; margin-right: 8px; }
@@ -96,9 +106,10 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .chat-form input { flex: 1; padding: 11px 14px; border-radius: 8px; border: none; background: #383a40; color: #dbdee1; font-size: 15px; }
 .chat-form button { padding: 0 18px; border: none; border-radius: 8px; background: #5865f2; color: #fff; font-weight: 600; cursor: pointer; }
 
-.members { width: 200px; background: #2b2d31; padding: 12px 8px; }
+.members { width: 200px; background: #2b2d31; padding: 12px 8px; overflow-y: auto; }
 .members ul { list-style: none; }
 .members li { padding: 5px 8px; color: #949ba4; font-size: 14px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
+.members li.offline { opacity: .45; }
 
 /* Prévia de transmissão */
 #preview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 10; }
