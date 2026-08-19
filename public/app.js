@@ -5,8 +5,28 @@ const $ = (id) => document.getElementById(id);
 let selfId = null;
 let username = null;
 
-// Reconexão: estado do servidor foi perdido (novo socket.id, sala esquecida) — recomeçar limpo
+// Reconexão: o servidor perdeu o estado desta conexão (novo socket.id). Recarrega e a sessão
+// guardada devolve o usuário ao servidor sozinho — restart/deploy não cai na tela de login.
 socket.io.on('reconnect', () => { if (username) location.reload(); });
+
+socket.on('server-restarting', () => showBanner('Servidor reiniciando… reconectando em instantes'));
+socket.on('disconnect', () => { if (username) showBanner('Conexão perdida… reconectando'); });
+socket.on('connect', () => hideBanner());
+
+function showBanner(text) {
+  let el = $('conn-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'conn-banner';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+function hideBanner() {
+  $('conn-banner')?.classList.add('hidden');
+}
 
 // PWA: instalável como aplicativo (ícone na barra de endereço / menu do navegador)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -75,6 +95,8 @@ const SOUNDS = {
   leave:     [[440, 0, .1], [349.23, .11, .1], [261.63, .22, .25]],
   screenOn:  [[440, 0, .1], [659.25, .12, .2]],
   screenOff: [[659.25, 0, .1], [440, .12, .2]],
+  userJoin:  [[587.33, 0, .09], [880, .1, .22]],   // alguém entrou na call: sobe
+  userLeave: [[880, 0, .09], [587.33, .1, .22]],   // alguém saiu: desce
 };
 let audioCtx = null;
 
@@ -105,29 +127,52 @@ $('login-btn').onclick = () => auth('login');
 $('register-btn').onclick = () => auth('register');
 $('password-input').onkeydown = (e) => { if (e.key === 'Enter') auth('login'); };
 
+// Sessão guardada: volta ao servidor sem digitar senha (inclusive depois de um restart)
+socket.on('connect', () => {
+  const token = localStorage.getItem('hx-token');
+  if (!token || username) return;
+  socket.emit('resume', { token }, (res) => {
+    if (!res || res.error) { localStorage.removeItem('hx-token'); return; }
+    enterApp(res);
+    if (sessionStorage.getItem('hx-in-voice') === '1') joinVoice(); // estava em call antes da queda
+  });
+});
+
+function enterApp(res) {
+  selfId = res.selfId;
+  username = res.username;
+  if (res.token) localStorage.setItem('hx-token', res.token);
+  avatares.clear();
+  $('messages').replaceChildren();
+  $('user-list').replaceChildren();
+  $('voice-users').replaceChildren();
+  sharers.clear();
+  Object.entries(res.avatars || {}).forEach(([n, img]) => avatares.set(n, img));
+  $('login-screen').classList.add('hidden');
+  $('main-screen').classList.remove('hidden');
+  $('self-name').textContent = username;
+  $('self-avatar').replaceChildren(avatarEl(username, 28));
+  res.messages.forEach(renderMessage);
+  res.users.forEach((user) => addUser(user.id, user.username));
+  res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted));
+  res.sharers.forEach((s) => {
+    sharers.set(s.id, { username: s.username, thumb: s.thumb });
+    updateBadge(s.id, true);
+  });
+  renderLiveStrip();
+  scrollMessages();
+}
+
 function auth(event) {
   const u = $('username-input').value.trim();
   const p = $('password-input').value;
   if (!u || !p) { $('login-error').textContent = 'Preencha usuário e senha.'; return; }
   socket.emit(event, { username: u, password: p }, (res) => {
     if (!res || res.error) { $('login-error').textContent = (res && res.error) || 'Falha ao entrar.'; return; }
-    selfId = res.selfId;
-    username = res.username || u; // nome canônico do banco
-    Object.entries(res.avatars || {}).forEach(([n, img]) => avatares.set(n, img));
-    $('login-screen').classList.add('hidden');
-    $('main-screen').classList.remove('hidden');
-    $('self-name').textContent = username;
-    $('self-avatar').replaceChildren(avatarEl(username, 28));
-    res.messages.forEach(renderMessage);
-    res.users.forEach((user) => addUser(user.id, user.username));
-    res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted));
-    res.sharers.forEach((s) => {
-      sharers.set(s.id, { username: s.username, thumb: s.thumb });
-      updateBadge(s.id, true);
-    });
-    scrollMessages();
+    enterApp(res);
   });
 }
+
 
 // ---------- Chat ----------
 $('chat-form').onsubmit = (e) => {
@@ -265,6 +310,7 @@ async function joinVoice() {
     $('voice-controls').classList.remove('hidden');
     addVoiceUser(selfId, username);
     attachSpeaking(selfId, localStream);
+    sessionStorage.setItem('hx-in-voice', '1'); // volta pra call sozinho se cair
     // Novato inicia a conexão com cada participante já presente
     res.peers.forEach(({ id }) => getPeer(id));
     if (previewId) updatePreview();
@@ -274,6 +320,7 @@ async function joinVoice() {
 function leaveVoice() {
   if (!inVoice) return;
   inVoice = false;
+  sessionStorage.removeItem('hx-in-voice');
   socket.emit('leave-voice');
   if (screenStream) stopScreen(false);
   watching.forEach((id) => removeScreenTile(id));
@@ -290,6 +337,7 @@ function leaveVoice() {
   deafened = false;
   $('deafen-btn').classList.remove('active');
   $('deafen-icon').setAttribute('href', '#i-headset');
+  renderLiveStrip();
   playSound('leave');
   if (previewId) updatePreview();
 }
@@ -327,6 +375,7 @@ function toggleDeafen() {
 socket.on('voice-user-joined', ({ id, username: name }) => {
   addVoiceUser(id, name);
   systemMessage(name + ' entrou no canal de voz');
+  if (inVoice) playSound('userJoin'); // alerta de entrada, como no Discord
   // Conexão criada sob demanda quando a oferta do novato chegar
 });
 
@@ -334,7 +383,7 @@ socket.on('voice-user-left', ({ id }) => {
   removeVoiceUser(id);
   removePeer(id);
   sharerGone(id);
-  if (inVoice) playSound('leave');
+  if (inVoice) playSound('userLeave');
 });
 
 // ---------- Tratamento do microfone (redução de ruído estilo Discord) ----------
@@ -542,7 +591,9 @@ async function toggleScreen() {
   track.onended = () => stopScreen(); // botão "parar compartilhamento" do navegador
   addScreenTile(selfId, screenStream, true);
   socket.emit('screen-share', { on: true });
+  sharers.set(selfId, { username, thumb: null }); // aparece no meu próprio carrossel
   updateBadge(selfId, true);
+  renderLiveStrip();
   $('screen-btn').classList.add('active');
   playSound('screenOn');
   thumbTimer = setInterval(sendThumb, 3000);
@@ -561,7 +612,9 @@ function stopScreen(sound = true) {
   screenStream = null;
   removeScreenTile(selfId);
   socket.emit('screen-share', { on: false });
+  sharers.delete(selfId);
   updateBadge(selfId, false);
+  renderLiveStrip();
   $('screen-btn').classList.remove('active');
   if (sound) playSound('screenOff');
 }
@@ -573,7 +626,10 @@ function sendThumb() {
   canvas.width = 320;
   canvas.height = Math.round(320 * video.videoHeight / video.videoWidth) || 180;
   canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-  socket.emit('screen-thumb', { img: canvas.toDataURL('image/jpeg', 0.5) });
+  const img = canvas.toDataURL('image/jpeg', 0.5);
+  socket.emit('screen-thumb', { img });
+  const mine = sharers.get(selfId);
+  if (mine && !mine.thumb) { mine.thumb = img; renderLiveStrip(); } // primeira prévia da minha live
 }
 
 // Codec: VP9 comprime ~30-40% melhor que o VP8 padrão — mais qualidade no mesmo bitrate
@@ -632,6 +688,7 @@ socket.on('screen-share', ({ id, username: name, on }) => {
   } else {
     sharerGone(id);
   }
+  renderLiveStrip();
 });
 
 socket.on('screen-thumb', ({ id, img }) => {
@@ -639,6 +696,7 @@ socket.on('screen-thumb', ({ id, img }) => {
   if (!s || typeof img !== 'string') return;
   s.thumb = img;
   if (previewId === id) updatePreview();
+  if (!watching.has(id)) renderLiveStrip(); // prévia atualizada no carrossel
 });
 
 function sharerGone(id) {
@@ -647,6 +705,7 @@ function sharerGone(id) {
   watching.delete(id);
   removeScreenTile(id);
   if (previewId === id) closePreview();
+  renderLiveStrip();
 }
 
 function updateBadge(id, on) {
@@ -710,24 +769,9 @@ function updatePreview() {
 
 $('preview-watch').onclick = () => {
   if (!previewId || !inVoice) return;
-  if (watching.has(previewId)) {
-    socket.emit('unwatch', { to: previewId });
-    watching.delete(previewId);
-    removeScreenTile(previewId);
-  } else {
-    const id = previewId;
-    watching.add(id);
-    socket.emit('watch', { to: id }, (res) => {
-      if (!res || !res.ok) { // transmissão acabou de encerrar
-        watching.delete(id);
-        removeScreenTile(id);
-        if (previewId === id) updatePreview();
-      }
-    });
-    closePreview();
-    return;
-  }
-  updatePreview();
+  const started = !watching.has(previewId);
+  toggleWatch(previewId);
+  if (started) closePreview();
 };
 
 // ---------- Editar perfil (foto) ----------
@@ -836,6 +880,72 @@ $('avatar-file').onchange = async () => {
   });
 };
 
+// ---------- Carrossel: todas as transmissões abertas, assistindo ou não ----------
+$('strip-prev').onclick = () => $('strip-track').scrollBy({ left: -352, behavior: 'smooth' });
+$('strip-next').onclick = () => $('strip-track').scrollBy({ left: 352, behavior: 'smooth' });
+
+function renderLiveStrip() {
+  const track = $('strip-track');
+  const list = [...sharers.entries()];
+  $('live-strip').classList.toggle('hidden', list.length === 0);
+  track.replaceChildren();
+
+  for (const [id, info] of list) {
+    const item = document.createElement('div');
+    item.className = 'strip-item';
+    const isSelf = id === selfId;
+    const isWatching = isSelf || watching.has(id);
+    item.classList.toggle('watching', isWatching);
+
+    if (info.thumb) {
+      const img = document.createElement('img');
+      img.src = info.thumb;
+      img.alt = 'Prévia de ' + info.username;
+      item.appendChild(img);
+    } else {
+      const ph = document.createElement('div');
+      ph.className = 'strip-placeholder';
+      ph.textContent = 'Sem prévia ainda';
+      item.appendChild(ph);
+    }
+
+    const live = document.createElement('span');
+    live.className = 'strip-live';
+    live.textContent = 'AO VIVO';
+    const name = document.createElement('div');
+    name.className = 'strip-name';
+    name.textContent = isSelf ? 'Sua tela' : info.username;
+    const action = document.createElement('div');
+    action.className = 'strip-action';
+    action.innerHTML = '<svg class="icon"><use href="#i-' + (isWatching ? 'x' : 'play') + '"/></svg>';
+    item.append(live, action, name);
+
+    item.title = isSelf ? 'Sua transmissão' : (isWatching ? 'Parar de assistir' : 'Assistir');
+    if (!isSelf) item.onclick = () => toggleWatch(id);
+    track.appendChild(item);
+  }
+}
+
+function toggleWatch(id) {
+  if (!inVoice) { systemMessage('Entre no canal de voz para assistir.'); return; }
+  if (watching.has(id)) {
+    socket.emit('unwatch', { to: id });
+    watching.delete(id);
+    removeScreenTile(id);
+  } else {
+    watching.add(id);
+    socket.emit('watch', { to: id }, (res) => {
+      if (!res || !res.ok) { // transmissão acabou de encerrar
+        watching.delete(id);
+        removeScreenTile(id);
+        renderLiveStrip();
+      }
+    });
+  }
+  renderLiveStrip();
+  if (previewId) updatePreview();
+}
+
 // ---------- Tiles de vídeo (zoom com scroll, expandir, tela cheia) ----------
 function tileButton(iconId, title, onClick) {
   const b = document.createElement('button');
@@ -845,29 +955,38 @@ function tileButton(iconId, title, onClick) {
   return b;
 }
 
+// Grid: colunas = ceil(sqrt(n)) — 1 cheia, até 4 em 2x2, até 9 em 3x3, 16 em 4x4…
+// zoomOffset (scroll do mouse) tira/põe colunas para aumentar ou diminuir as lives.
+let zoomOffset = 0;
+
 function updateLiveMode() {
-  const live = $('screens').children.length > 0;
-  $('screens').classList.toggle('hidden', !live);
-  document.querySelector('.content').classList.toggle('live-mode', live);
+  const screens = $('screens');
+  const n = screens.children.length;
+  screens.classList.toggle('hidden', n === 0);
+  document.querySelector('.content').classList.toggle('live-mode', n > 0);
+  if (!n) { zoomOffset = 0; return; }
+
+  const auto = Math.ceil(Math.sqrt(n));
+  const cols = Math.max(1, Math.min(n, auto + zoomOffset));
+  const rows = Math.ceil(n / cols);
+  screens.style.setProperty('--cols', cols);
+  screens.style.setProperty('--rows', rows);
 }
+
+// Scroll sobre a área de lives = zoom (menos colunas = lives maiores)
+$('screens').addEventListener('wheel', (e) => {
+  if (!$('screens').children.length) return;
+  e.preventDefault();
+  zoomOffset += e.deltaY < 0 ? -1 : 1;
+  zoomOffset = Math.max(-3, Math.min(3, zoomOffset));
+  updateLiveMode();
+}, { passive: false });
 
 function addScreenTile(id, stream, muted = false) {
   removeScreenTile(id);
   const tile = document.createElement('div');
   tile.className = 'screen-tile';
   tile.id = 'screen-' + id;
-  let width = 420;
-  const setWidth = (w) => {
-    width = Math.max(240, Math.min(1400, w));
-    tile.style.setProperty('--tile-w', width + 'px');
-  };
-  setWidth(width);
-  // Zoom com o scroll do mouse sobre a live
-  tile.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    setWidth(width + (e.deltaY < 0 ? 60 : -60));
-  }, { passive: false });
-
   const video = document.createElement('video');
   video.autoplay = true;
   video.playsInline = true;
@@ -883,6 +1002,7 @@ function addScreenTile(id, stream, muted = false) {
   const expandBtn = tileButton('expand', 'Expandir', () => {
     const focused = tile.classList.toggle('focused');
     expandBtn.querySelector('use').setAttribute('href', focused ? '#i-shrink' : '#i-expand');
+    updateLiveMode();
   });
   controls.append(
     expandBtn,

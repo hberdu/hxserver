@@ -25,7 +25,7 @@ beforeEach(() => {
   state.voice.clear();
   state.sharing.clear();
   state.thumbs.clear();
-  db.exec('DELETE FROM users');
+  db.exec('DELETE FROM users'); db.exec('DELETE FROM sessions');
 });
 
 function connect() {
@@ -106,10 +106,28 @@ test('senha nunca é armazenada em texto puro (hash + salt por usuário)', async
   for (const row of rows) {
     assert.notEqual(row.hash, 'minhaSenhaSecreta');
     assert.ok(!row.hash.includes('minhaSenhaSecreta'), 'hash não contém a senha');
-    assert.match(row.hash, /^[0-9a-f]{128}$/, 'hash scrypt de 64 bytes em hex');
+    assert.match(row.hash, /^s2\$\d+\$\d+\$\d+\$[0-9a-f]{128}$/, 'hash scrypt versionado com parâmetros');
     assert.match(row.salt, /^[0-9a-f]{32}$/, 'salt de 16 bytes em hex');
   }
   assert.notEqual(rows[0].hash, rows[1].hash, 'mesma senha, hashes diferentes (salt único)');
+});
+
+test('senha antiga (hash sem parâmetros) ainda entra e migra para o formato novo', async () => {
+  const crypto = require('node:crypto');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const legacy = crypto.scryptSync('senha123', Buffer.from(salt, 'hex'), 64,
+    { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 }).toString('hex');
+  db.prepare('INSERT INTO users (username, salt, hash) VALUES (?, ?, ?)').run('antiga', salt, legacy);
+
+  const a = await connect();
+  const res = await emitAck(a, 'login', { username: 'antiga', password: 'senha123' });
+  assert.equal(res.ok, true, 'conta antiga continua entrando');
+  assert.match(db.prepare('SELECT hash FROM users WHERE username = ?').get('antiga').hash, /^s2\$/, 'migrou');
+
+  a.disconnect();
+  const b = await connect();
+  assert.equal((await emitAck(b, 'login', { username: 'antiga', password: 'senha123' })).ok, true, 'entra após migrar');
+  assert.ok((await emitAck(b, 'login', { username: 'antiga', password: 'errada99' })).error);
 });
 
 test('login duplicado na mesma conexão responde erro', async () => {
@@ -206,6 +224,61 @@ test('rename: atualiza banco e estado, propaga, rejeita duplicado e inválido', 
   const got = once(b, 'chat-message');
   a.emit('chat-message', { text: 'oi' });
   assert.equal((await got).username, 'anastacia');
+});
+
+test('sessão: token do login permite voltar sem senha e sobrevive a "restart"', async () => {
+  const a = await connect();
+  const reg = await emitAck(a, 'register', { username: 'ana', password: 'senha123' });
+  assert.match(reg.token, /^[0-9a-f]{64}$/, 'token entregue no registro');
+  a.disconnect();
+
+  // outro socket (equivale a reconectar depois de o servidor cair)
+  const b = await connect();
+  const res = await emitAck(b, 'resume', { token: reg.token });
+  assert.equal(res.ok, true);
+  assert.equal(res.username, 'ana');
+  assert.equal(res.token, reg.token, 'token continua o mesmo');
+
+  const c = await connect();
+  assert.ok((await emitAck(c, 'resume', { token: 'x'.repeat(64) })).error, 'token inválido');
+  assert.ok((await emitAck(c, 'resume', null)).error, 'payload inválido');
+});
+
+test('sessão: token guardado em hash, não em texto puro', async () => {
+  const a = await connect();
+  const reg = await emitAck(a, 'register', { username: 'ana', password: 'senha123' });
+  const rows = db.prepare('SELECT token FROM sessions').all();
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0].token, reg.token);
+  assert.match(rows[0].token, /^[0-9a-f]{64}$/);
+});
+
+test('logout invalida a sessão', async () => {
+  const a = await connect();
+  const reg = await emitAck(a, 'register', { username: 'ana', password: 'senha123' });
+  a.emit('logout', { token: reg.token });
+  await sleep(80);
+  const b = await connect();
+  assert.ok((await emitAck(b, 'resume', { token: reg.token })).error);
+});
+
+test('rename mantém a sessão válida', async () => {
+  const a = await connect();
+  const reg = await emitAck(a, 'register', { username: 'ana', password: 'senha123' });
+  await emitAck(a, 'rename', { username: 'anastacia' });
+  a.disconnect();
+  const b = await connect();
+  const res = await emitAck(b, 'resume', { token: reg.token });
+  assert.equal(res.username, 'anastacia');
+});
+
+test('erro em um handler não derruba o servidor', async () => {
+  const a = await loggedClient('ana');
+  a.emit('set-avatar', { img: { toString() { throw new Error('boom'); } } });
+  a.emit('rename', { username: Object.create(null) });
+  await sleep(120);
+  const b = await connect();
+  assert.equal((await emitAck(b, 'register', { username: 'beto', password: 'senha123' })).ok, true);
 });
 
 // ---------- Chat ----------
