@@ -314,11 +314,17 @@ test('rate limit de auth por IP sobrevive à reconexão (fura o bucket por-socke
   assert.ok(blocked, 'o limite por IP deveria travar mesmo reconectando a cada tentativa');
 });
 
-test('charset do nome: register rejeita caractere inválido; nome limpo passa', async () => {
+test('charset do nome: caracteres especiais liberados; invisíveis/controle barrados', async () => {
   const a = await connect();
-  assert.ok((await emitAck(a, 'register', { username: 'a​na', password: 'senha123' })).error, 'zero-width barrado');
+  assert.ok((await emitAck(a, 'register', { username: 'a\u200bna', password: 'senha123' })).error, 'zero-width barrado');
   assert.ok((await emitAck(a, 'register', { username: 'ana\nx', password: 'senha123' })).error, 'newline barrado');
-  assert.equal((await emitAck(a, 'register', { username: 'joão_2', password: 'senha123' })).ok, true, 'acento/underscore ok');
+  assert.ok((await emitAck(a, 'register', { username: 'a\u202ena', password: 'senha123' })).error, 'override bidi barrado');
+  const d = await connect(); // socket novo: 'a' já gastou o bucket por-socket com 3 registers
+  assert.equal((await emitAck(d, 'register', { username: 'joão_2', password: 'senha123' })).ok, true, 'acento/underscore ok');
+  const b = await connect();
+  assert.equal((await emitAck(b, 'register', { username: 'zé★!#', password: 'senha123' })).ok, true, 'símbolos/estrela liberados');
+  const c = await connect();
+  assert.equal((await emitAck(c, 'register', { username: 'lud 🐍', password: 'senha123' })).ok, true, 'emoji liberado');
 });
 
 test('get-profile: devolve data de cadastro; exige login; nome inexistente falha', async () => {

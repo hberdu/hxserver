@@ -284,14 +284,16 @@ function validImage(img, max) {
   return !!m && m[1].length % 4 === 0;
 }
 
-// Allowlist de caracteres do nome: barra zero-width, homóglifos de controle, newline (impersonação
-// visual de outro membro e spoofing de log). Normaliza NFC para "á" composto e decomposto casarem.
-const NAME_RE = /^[\p{L}\p{N} _.\-]{3,32}$/u;
+// Caracteres especiais são liberados (símbolos, emoji, pontuação). Só bloqueia o que é perigoso e
+// invisível: controle (C0/C1), zero-width, quebras de linha e overrides bidi — usados para se passar
+// por outro membro ou falsear logs. Normaliza NFC para "á" composto/decomposto casarem.
+// eslint-disable-next-line no-control-regex
+const NAME_BAD = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/;
 function cleanName(raw) {
   if (typeof raw !== 'string') return null;
   const u = raw.normalize('NFC').trim();
   if (u.length < MIN_NAME || u.length > MAX_NAME) return { error: `Usuário deve ter entre ${MIN_NAME} e ${MAX_NAME} caracteres.` };
-  if (!NAME_RE.test(u)) return { error: 'Nome só pode ter letras, números, espaço e . _ -' };
+  if (NAME_BAD.test(u)) return { error: 'O nome tem caracteres invisíveis ou de controle não permitidos.' };
   return { username: u };
 }
 
