@@ -163,7 +163,7 @@ function enterApp(res) {
   $('self-avatar').replaceChildren(avatarEl(username, 28));
   res.messages.forEach(renderMessage);
   res.users.forEach((user) => addUser(user.id, user.username));
-  res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted));
+  res.voiceUsers.forEach((user) => addVoiceUser(user.id, user.username, user.muted, user.deafened));
   res.sharers.forEach((s) => {
     sharers.set(s.id, { username: s.username, thumb: s.thumb });
     updateBadge(s.id, true);
@@ -258,7 +258,7 @@ const sharers = new Map();       // sharerId -> { username, thumb }
 const watching = new Set();      // sharerIds que estou assistindo
 const viewerSenders = new Map(); // viewerId -> RTCRtpSender do meu vídeo de tela
 
-function addVoiceUser(id, name, muted = false) {
+function addVoiceUser(id, name, muted = false, deafened = false) {
   if (document.getElementById('voice-user-' + id)) return;
   const li = document.createElement('li');
   li.id = 'voice-user-' + id;
@@ -269,8 +269,13 @@ function addVoiceUser(id, name, muted = false) {
   muteInd.className = 'mute-ind';
   muteInd.title = 'Mutado';
   muteInd.innerHTML = '<svg class="icon"><use href="#i-mic-off"/></svg>';
-  li.append(avatarEl(name, 24), span, muteInd);
+  const deafInd = document.createElement('span');
+  deafInd.className = 'deaf-ind';
+  deafInd.title = 'Silenciado';
+  deafInd.innerHTML = '<svg class="icon"><use href="#i-headset-off"/></svg>';
+  li.append(avatarEl(name, 24), span, muteInd, deafInd);
   li.classList.toggle('muted', muted);
+  li.classList.toggle('deafened', deafened);
   $('voice-users').appendChild(li);
   if (sharers.has(id)) updateBadge(id, true);
 }
@@ -280,6 +285,12 @@ function setVoiceMuted(id, muted) {
 }
 
 socket.on('user-muted', ({ id, muted } = {}) => setVoiceMuted(id, muted));
+
+function setVoiceDeafened(id, deafened) {
+  document.getElementById('voice-user-' + id)?.classList.toggle('deafened', !!deafened);
+}
+
+socket.on('user-deafened', ({ id, deafened } = {}) => setVoiceDeafened(id, deafened));
 
 function removeVoiceUser(id) {
   document.getElementById('voice-user-' + id)?.remove();
@@ -376,6 +387,8 @@ function toggleDeafen() {
   document.querySelectorAll('audio[id^="audio-"]').forEach((a) => { a.muted = deafened; });
   $('deafen-btn').classList.toggle('active', deafened);
   $('deafen-icon').setAttribute('href', deafened ? '#i-headset-off' : '#i-headset');
+  setVoiceDeafened(selfId, deafened);
+  socket.emit('set-deafened', { deafened }); // setMuted não emite se o mic já estava fechado
   setMuted(deafened, false); // silenciado implica microfone fechado
   playSound(deafened ? 'mute' : 'unmute');
 }

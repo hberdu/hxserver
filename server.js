@@ -99,6 +99,7 @@ const state = {
   messages: [],
   voice: new Set(),    // socketIds no canal de voz
   muted: new Set(),    // socketIds mutados
+  deafened: new Set(), // socketIds com o canal silenciado (não ouvem ninguém)
   sharing: new Set(),  // socketIds transmitindo tela
   thumbs: new Map(),   // socketId -> último thumbnail (data URL)
 };
@@ -165,7 +166,7 @@ io.on('connection', (socket) => {
       username, // nome canônico do banco (login "ANA" -> "ana")
       messages: state.messages,
       users: userList(),
-      voiceUsers: [...state.voice].map((id) => ({ id, username: state.users.get(id), muted: state.muted.has(id) })),
+      voiceUsers: [...state.voice].map((id) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id) })),
       sharers: [...state.sharing].map((id) => ({ id, username: state.users.get(id), thumb: state.thumbs.get(id) || null })),
     });
     socket.to(SERVER_NAME).emit('user-joined', { id: socket.id, username });
@@ -272,6 +273,14 @@ io.on('connection', (socket) => {
     socket.to(SERVER_NAME).emit('user-muted', { id: socket.id, muted });
   });
 
+  on('set-deafened', (payload) => {
+    if (!loggedIn() || !state.voice.has(socket.id)) return;
+    const deafened = !!(payload && payload.deafened);
+    if (deafened) state.deafened.add(socket.id);
+    else state.deafened.delete(socket.id);
+    socket.to(SERVER_NAME).emit('user-deafened', { id: socket.id, deafened });
+  });
+
   function stopSharing() {
     if (state.sharing.delete(socket.id)) {
       state.thumbs.delete(socket.id);
@@ -282,6 +291,7 @@ io.on('connection', (socket) => {
   function leaveVoice() {
     stopSharing();
     state.muted.delete(socket.id);
+    state.deafened.delete(socket.id);
     if (state.voice.delete(socket.id)) {
       socket.to(SERVER_NAME).emit('voice-user-left', { id: socket.id });
     }

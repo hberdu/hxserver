@@ -395,6 +395,32 @@ test('set-muted: propaga aos demais, entra no login ack e limpa ao sair da voz',
   assert.equal(state.muted.size, 0, 'sair da voz limpa o mute');
 });
 
+test('set-deafened: propaga aos demais, entra no login ack e limpa ao sair da voz', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  await joinVoice(a);
+
+  let leaked = false;
+  a.on('user-deafened', () => { leaked = true; });
+  b.emit('set-deafened', { deafened: true }); // b não está na voz
+  await sleep(80);
+  assert.equal(leaked, false);
+
+  const got = once(b, 'user-deafened');
+  a.emit('set-deafened', { deafened: true });
+  const ev = await got;
+  assert.equal(ev.id, a.id);
+  assert.equal(ev.deafened, true);
+
+  const c = await connect();
+  const rc = await emitAck(c, 'register', { username: 'carla', password: 'senha123' });
+  assert.equal(rc.voiceUsers.find((u) => u.id === a.id).deafened, true);
+
+  a.emit('leave-voice');
+  await sleep(80);
+  assert.equal(state.deafened.size, 0, 'sair da voz limpa o silenciado');
+});
+
 test('disconnect: limpa usuário, voz e transmissão', async () => {
   const a = await loggedClient('ana');
   const b = await loggedClient('beto');
