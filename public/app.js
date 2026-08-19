@@ -7,11 +7,19 @@ let username = null;
 
 // Reconexão: o servidor perdeu o estado desta conexão (novo socket.id). Recarrega e a sessão
 // guardada devolve o usuário ao servidor sozinho — restart/deploy não cai na tela de login.
-socket.io.on('reconnect', () => { if (username) location.reload(); });
+socket.io.on('reconnect', () => { if (username && !superseded) location.reload(); });
 
 socket.on('server-restarting', () => showBanner('Servidor reiniciando… reconectando em instantes'));
-socket.on('disconnect', () => { if (username) showBanner('Conexão perdida… reconectando'); });
+socket.on('disconnect', () => { if (username && !superseded) showBanner('Conexão perdida… reconectando'); });
 socket.on('connect', () => hideBanner());
+
+// A mesma conta entrou em outra aba/dispositivo: esta conexão foi substituída
+let superseded = false;
+socket.on('session-superseded', () => {
+  superseded = true;
+  socket.disconnect(); // não reconectar: a outra aba assumiu
+  showBanner('Sua conta entrou em outra aba ou dispositivo. Recarregue para usar aqui.');
+});
 
 function showBanner(text) {
   let el = $('conn-banner');
@@ -97,6 +105,7 @@ const SOUNDS = {
   screenOff: [[659.25, 0, .1], [440, .12, .2]],
   userJoin:  [[587.33, 0, .09], [880, .1, .22]],   // alguém entrou na call: sobe
   userLeave: [[880, 0, .09], [587.33, .1, .22]],   // alguém saiu: desce
+  notify:    [[880, 0, .08], [1174.66, .09, .15]], // mensagem nova com a aba em segundo plano
 };
 let audioCtx = null;
 
@@ -132,9 +141,9 @@ async function playSound(name) {
 }
 
 // ---------- Login / Registro ----------
-$('login-btn').onclick = () => auth('login');
+// <form> de verdade: Enter envia de qualquer campo e o navegador oferece salvar a senha
+$('login-form').onsubmit = (e) => { e.preventDefault(); auth('login'); };
 $('register-btn').onclick = () => auth('register');
-$('password-input').onkeydown = (e) => { if (e.key === 'Enter') auth('login'); };
 
 // Sessão guardada: volta ao servidor sem digitar senha (inclusive depois de um restart)
 socket.on('connect', () => {
@@ -152,6 +161,7 @@ function enterApp(res) {
   username = res.username;
   if (res.token) localStorage.setItem('hx-token', res.token);
   avatares.clear();
+  lastAuthor = null;
   $('messages').replaceChildren();
   $('user-list').replaceChildren();
   $('voice-users').replaceChildren();
@@ -169,13 +179,16 @@ function enterApp(res) {
     updateBadge(s.id, true);
   });
   scrollMessages();
+  $('chat-input').focus();
 }
 
 function auth(event) {
   const u = $('username-input').value.trim();
   const p = $('password-input').value;
   if (!u || !p) { $('login-error').textContent = 'Preencha usuário e senha.'; return; }
+  $('login-btn').disabled = $('register-btn').disabled = true; // scrypt demora: evita duplo envio
   socket.emit(event, { username: u, password: p }, (res) => {
+    $('login-btn').disabled = $('register-btn').disabled = false;
     if (!res || res.error) { $('login-error').textContent = (res && res.error) || 'Falha ao entrar.'; return; }
     enterApp(res);
   });
@@ -191,35 +204,66 @@ $('chat-form').onsubmit = (e) => {
   $('chat-input').value = '';
 };
 
+// Agrupamento: mensagens seguidas do mesmo autor em <5min não repetem avatar/nome
+let lastAuthor = null;
+let lastTs = 0;
+
 function renderMessage({ username: author, text, ts }) {
+  const compact = author === lastAuthor && ts - lastTs < 5 * 60 * 1000;
+  lastAuthor = author;
+  lastTs = ts;
   const div = document.createElement('div');
-  div.className = 'message';
-  const time = new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  const meta = document.createElement('div');
-  meta.className = 'meta';
-  const authorSpan = document.createElement('span');
-  authorSpan.className = 'author';
-  authorSpan.textContent = author;
-  const timeSpan = document.createElement('span');
-  timeSpan.className = 'time';
-  timeSpan.textContent = time;
-  meta.append(authorSpan, timeSpan);
+  div.className = compact ? 'message compact' : 'message';
+
   const textDiv = document.createElement('div');
   textDiv.className = 'text';
-  textDiv.textContent = text;
-  const body = document.createElement('div');
-  body.className = 'body';
-  body.append(meta, textDiv);
-  div.append(avatarEl(author, 36), body);
+  // Links clicáveis: só createElement/append, nunca innerHTML (sem risco de XSS)
+  text.split(/(https?:\/\/[^\s]+)/g).forEach((part, i) => {
+    if (i % 2) {
+      const a = document.createElement('a');
+      a.href = part;
+      a.textContent = part;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      textDiv.appendChild(a);
+    } else if (part) {
+      textDiv.append(part);
+    }
+  });
+
+  if (compact) {
+    div.appendChild(textDiv);
+  } else {
+    const d = new Date(ts);
+    // Histórico pode ter dias: mensagem de outro dia mostra a data junto da hora
+    const time = (d.toDateString() === new Date().toDateString() ? ''
+      : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ')
+      + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const authorSpan = document.createElement('span');
+    authorSpan.className = 'author';
+    authorSpan.textContent = author;
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'time';
+    timeSpan.textContent = time;
+    meta.append(authorSpan, timeSpan);
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.append(meta, textDiv);
+    div.append(avatarEl(author, 36), body);
+  }
   $('messages').appendChild(div);
 }
 
 function systemMessage(text) {
+  lastAuthor = null; // aviso de sistema quebra o agrupamento visual
+  const stick = nearBottom();
   const div = document.createElement('div');
   div.className = 'message system';
   div.textContent = text;
   $('messages').appendChild(div);
-  scrollMessages();
+  if (stick) scrollMessages();
 }
 
 function scrollMessages() {
@@ -227,7 +271,65 @@ function scrollMessages() {
   m.scrollTop = m.scrollHeight;
 }
 
-socket.on('chat-message', (msg) => { renderMessage(msg); scrollMessages(); });
+// Só rola sozinho se o usuário já estava no fundo — não rouba a posição de quem lê o histórico
+function nearBottom() {
+  const m = $('messages');
+  return m.scrollHeight - m.scrollTop - m.clientHeight < 80;
+}
+
+// Aba em segundo plano: contador no título + som de alerta
+let unread = 0;
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    unread = 0;
+    document.title = 'HX Chat';
+  }
+});
+
+socket.on('chat-message', (msg) => {
+  const stick = nearBottom() || msg.username === username; // mensagem própria sempre rola
+  renderMessage(msg);
+  if (stick) scrollMessages();
+  clearTyping(msg.username); // a mensagem chegou: some o "está digitando"
+  if (document.hidden && msg.username !== username) {
+    unread++;
+    document.title = '(' + unread + ') HX Chat';
+    playSound('notify');
+  }
+});
+
+// ---------- "Fulano está digitando…" ----------
+const typingUsers = new Map(); // nome -> timeout de expiração
+let lastTypingSent = 0;
+
+$('chat-input').addEventListener('input', () => {
+  const now = Date.now();
+  if ($('chat-input').value && now - lastTypingSent > 2000) {
+    lastTypingSent = now;
+    socket.emit('typing');
+  }
+});
+
+socket.on('typing', ({ username: name } = {}) => {
+  if (typeof name !== 'string' || name === username) return;
+  clearTimeout(typingUsers.get(name));
+  typingUsers.set(name, setTimeout(() => clearTyping(name), 3500));
+  renderTyping();
+});
+
+function clearTyping(name) {
+  clearTimeout(typingUsers.get(name));
+  if (typingUsers.delete(name)) renderTyping();
+}
+
+function renderTyping() {
+  const names = [...typingUsers.keys()];
+  $('typing-line').textContent =
+    names.length === 0 ? '' :
+    names.length === 1 ? names[0] + ' está digitando…' :
+    names.length === 2 ? names[0] + ' e ' + names[1] + ' estão digitando…' :
+    names.length + ' pessoas estão digitando…';
+}
 
 // ---------- Lista de usuários ----------
 function addUser(id, name) {
@@ -274,6 +376,22 @@ function addVoiceUser(id, name, muted = false, deafened = false) {
   deafInd.title = 'Silenciado';
   deafInd.innerHTML = '<svg class="icon"><use href="#i-headset-off"/></svg>';
   li.append(avatarEl(name, 24), span, muteInd, deafInd);
+  if (id !== selfId) {
+    // Volume individual (aparece no hover): lembrado por nome entre calls
+    const vol = document.createElement('input');
+    vol.type = 'range';
+    vol.min = 0;
+    vol.max = 100;
+    vol.className = 'vol-slider';
+    vol.value = localStorage.getItem('hx-vol-' + name) ?? 100;
+    vol.title = 'Volume de ' + name;
+    vol.oninput = () => {
+      const a = document.getElementById('audio-' + id);
+      if (a) a.volume = vol.value / 100;
+      localStorage.setItem('hx-vol-' + name, vol.value);
+    };
+    li.appendChild(vol);
+  }
   li.classList.toggle('muted', muted);
   li.classList.toggle('deafened', deafened);
   $('voice-users').appendChild(li);
@@ -307,6 +425,29 @@ $('leave-voice-btn').onclick = leaveVoice;
 $('mute-btn').onclick = toggleMute;
 $('deafen-btn').onclick = toggleDeafen;
 $('screen-btn').onclick = toggleScreen;
+
+// Atalhos: Esc fecha modais; Ctrl+Shift+M muta; Ctrl+Shift+D silencia (como no Discord)
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    $('profile-overlay').classList.add('hidden');
+    closePreview();
+  } else if (e.ctrlKey && e.shiftKey && e.code === 'KeyM') {
+    e.preventDefault();
+    toggleMute();
+  } else if (e.ctrlKey && e.shiftKey && e.code === 'KeyD') {
+    e.preventDefault();
+    toggleDeafen();
+  }
+});
+
+// Menu hambúrguer (mobile): sidebar vira gaveta
+$('menu-btn').onclick = (e) => {
+  e.stopPropagation(); // o clique no content fecharia a gaveta que acabou de abrir
+  document.querySelector('.sidebar').classList.toggle('open');
+};
+document.querySelector('.content').addEventListener('click', () => {
+  document.querySelector('.sidebar').classList.remove('open');
+});
 
 async function joinVoice() {
   if (inVoice) return;
@@ -353,21 +494,25 @@ function leaveVoice() {
   $('voice-controls').classList.add('hidden');
   removeVoiceUser(selfId);
   $('mute-btn').classList.remove('active');
+  $('mute-btn').setAttribute('aria-pressed', false);
   $('mute-icon').setAttribute('href', '#i-mic');
   deafened = false;
   $('deafen-btn').classList.remove('active');
+  $('deafen-btn').setAttribute('aria-pressed', false);
   $('deafen-icon').setAttribute('href', '#i-headset');
   playSound('leave');
   if (previewId) updatePreview();
 }
 
 let deafened = false;
+let mutedBeforeDeafen = false; // mute explícito anterior ao deafen: preservado ao sair (como no Discord)
 
 function setMuted(muted, sound = true) {
   const track = localStream?.getAudioTracks()[0];
   if (!track || track.enabled !== muted) return; // já está no estado pedido
   track.enabled = !muted;
   $('mute-btn').classList.toggle('active', muted);
+  $('mute-btn').setAttribute('aria-pressed', muted);
   $('mute-icon').setAttribute('href', muted ? '#i-mic-off' : '#i-mic');
   setVoiceMuted(selfId, muted);
   socket.emit('set-muted', { muted });
@@ -376,7 +521,8 @@ function setMuted(muted, sound = true) {
 
 function toggleMute() {
   if (!localStream) return;
-  if (deafened) { toggleDeafen(); return; } // sair do modo silenciado devolve a escuta e o mic
+  // Clicar no mic estando silenciado = quero falar: sai do deafen com o mic aberto
+  if (deafened) { mutedBeforeDeafen = false; toggleDeafen(); return; }
   setMuted(localStream.getAudioTracks()[0].enabled);
 }
 
@@ -384,12 +530,14 @@ function toggleMute() {
 function toggleDeafen() {
   if (!inVoice) return;
   deafened = !deafened;
+  if (deafened) mutedBeforeDeafen = !(localStream?.getAudioTracks()[0]?.enabled ?? true);
   document.querySelectorAll('audio[id^="audio-"]').forEach((a) => { a.muted = deafened; });
   $('deafen-btn').classList.toggle('active', deafened);
+  $('deafen-btn').setAttribute('aria-pressed', deafened);
   $('deafen-icon').setAttribute('href', deafened ? '#i-headset-off' : '#i-headset');
   setVoiceDeafened(selfId, deafened);
   socket.emit('set-deafened', { deafened }); // setMuted não emite se o mic já estava fechado
-  setMuted(deafened, false); // silenciado implica microfone fechado
+  setMuted(deafened ? true : mutedBeforeDeafen, false); // sair do deafen devolve o estado anterior do mic
   playSound(deafened ? 'mute' : 'unmute');
 }
 
@@ -527,6 +675,7 @@ function getPeer(peerId) {
       audio.srcObject = stream;
       audio.autoplay = true;
       audio.muted = deafened; // quem chega durante o modo silenciado também fica mudo
+      audio.volume = (localStorage.getItem('hx-vol-' + voiceUserName(peerId)) ?? 100) / 100;
       audio.id = 'audio-' + peerId;
       document.body.appendChild(audio);
       attachSpeaking(peerId, stream);
@@ -673,8 +822,10 @@ function retuneSenders() {
 // Espectador pediu para assistir minha tela
 socket.on('watch-request', ({ from } = {}) => {
   if (!screenStream || typeof from !== 'string') return;
-  const peer = peers.get(from);
-  if (!peer || viewerSenders.has(from)) return;
+  if (viewerSenders.has(from)) return;
+  // getPeer (não peers.get): logo após reload do espectador o pc dele pode ainda não existir
+  // aqui — descartaria o pedido e ele ficaria em "Parar de assistir" sem vídeo nunca chegar
+  const peer = getPeer(from);
   const sender = peer.pc.addTrack(screenStream.getVideoTracks()[0], screenStream);
   viewerSenders.set(from, sender);
   preferBestCodec(peer.pc, sender);

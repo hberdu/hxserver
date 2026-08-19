@@ -36,6 +36,16 @@ const renameSessions = db.prepare('UPDATE sessions SET username = ? WHERE userna
 const SESSION_MAX_AGE = 30 * 24 * 3600 * 1000;
 db.prepare('DELETE FROM sessions WHERE created < ?').run(Date.now() - SESSION_MAX_AGE);
 
+// Mensagens persistidas: chat sobrevive a restart/deploy (mesma durabilidade das contas)
+db.exec(`CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  text TEXT NOT NULL,
+  ts INTEGER NOT NULL
+)`);
+const insertMsg = db.prepare('INSERT INTO messages (username, text, ts) VALUES (?, ?, ?)');
+const trimMsgs = db.prepare('DELETE FROM messages WHERE id <= (SELECT MAX(id) FROM messages) - ?');
+
 const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
 function newSession(username) {
@@ -94,9 +104,11 @@ async function checkPassword(username, password) {
 // ---------- Estado do servidor único "HX" (em memória) ----------
 // ponytail: memória volátil; persistir mensagens no sqlite se precisar sobreviver a restart
 const SERVER_NAME = 'HX';
+const MAX_HISTORY = 100;
 const state = {
   users: new Map(),    // socketId -> username
-  messages: [],
+  messages: db.prepare(`SELECT username, text, ts FROM
+    (SELECT id, username, text, ts FROM messages ORDER BY id DESC LIMIT ${MAX_HISTORY}) ORDER BY id ASC`).all(),
   voice: new Set(),    // socketIds no canal de voz
   muted: new Set(),    // socketIds mutados
   deafened: new Set(), // socketIds com o canal silenciado (não ouvem ninguém)
@@ -109,7 +121,6 @@ const MIN_NAME = 3;
 const MIN_PASS = 6;
 const MAX_PASS = 72;
 const MAX_MSG = 2000;
-const MAX_HISTORY = 100;
 const MAX_THUMB = 200 * 1024; // ~200KB por thumbnail
 const MAX_AVATAR = 100 * 1024; // ~100KB por foto de perfil
 
@@ -132,9 +143,33 @@ function userList() {
   return [...state.users.entries()].map(([id, username]) => ({ id, username }));
 }
 
+// Anti-flood: custo em tokens por evento; eventos ausentes (sinalização WebRTC) são livres.
+// Bucket de 60 por socket, recarga 6/s: chat normal nunca esbarra, loop de spam esbarra em ~1s.
+const RATE_COST = {
+  register: 20, login: 20, resume: 5,          // scrypt caro: limita brute-force e DoS de threadpool
+  'chat-message': 2, typing: 1,
+  'screen-thumb': 5, 'set-avatar': 10, rename: 10, // thumb legítimo é 1 a cada 3s: folga de sobra
+};
+const RATE_MAX = 60;
+const RATE_REFILL = 6; // tokens por segundo
+
 io.on('connection', (socket) => {
+  let rateTokens = RATE_MAX;
+  let rateLast = Date.now();
   // Erro em um evento não pode derrubar o processo inteiro: isola cada handler
   const on = (event, handler) => socket.on(event, async (...args) => {
+    const cost = RATE_COST[event] || 0;
+    if (cost) {
+      const now = Date.now();
+      rateTokens = Math.min(RATE_MAX, rateTokens + Math.max(0, now - rateLast) / 1000 * RATE_REFILL);
+      rateLast = now;
+      if (rateTokens < cost) {
+        const ack = args[args.length - 1];
+        if (typeof ack === 'function') ack({ error: 'Muitas ações em pouco tempo. Aguarde um instante.' });
+        return;
+      }
+      rateTokens -= cost;
+    }
     try {
       await handler(...args);
     } catch (err) {
@@ -144,9 +179,35 @@ io.on('connection', (socket) => {
     }
   });
   let username = null;
-  const loggedIn = () => username !== null;
+  // Também exige presença no estado: um socket derrubado por dropStale perde a voz na hora,
+  // mesmo que eventos dele ainda cheguem antes do disconnect completar
+  const loggedIn = () => username !== null && state.users.has(socket.id);
+
+  // Remove do estado uma conexão antiga da mesma conta (substituída ou já morta).
+  // Deletes idempotentes: se o socket antigo ainda disparar 'disconnect', nada duplica.
+  function dropStale(id, name) {
+    const old = io.sockets.sockets.get(id);
+    if (old) {
+      old.emit('session-superseded');
+      setTimeout(() => old.disconnect(true), 100); // aviso chega antes de fechar
+    }
+    state.users.delete(id);
+    state.muted.delete(id);
+    state.deafened.delete(id);
+    if (state.sharing.delete(id)) {
+      state.thumbs.delete(id);
+      io.to(SERVER_NAME).emit('screen-share', { id, username: name, on: false });
+    }
+    if (state.voice.delete(id)) io.to(SERVER_NAME).emit('voice-user-left', { id });
+    io.to(SERVER_NAME).emit('user-left', { id, username: name });
+  }
 
   function enterServer(name, ack, token) {
+    if (socket.disconnected) return; // caiu durante o scrypt: não registrar socket morto
+    // Conexão nova substitui a antiga da mesma conta (evita fantasma duplicado após reconexão)
+    for (const [id, n] of [...state.users]) {
+      if (n === name && id !== socket.id) dropStale(id, n);
+    }
     username = name;
     state.users.set(socket.id, username);
     socket.join(SERVER_NAME);
@@ -178,6 +239,8 @@ io.on('connection', (socket) => {
     const c = cleanCreds(payload);
     if (!c) return ack({ error: 'Preencha usuário e senha.' });
     if (c.error) return ack({ error: c.error });
+    // Duplicado responde antes de pagar o scrypt (evita queimar threadpool com nome repetido)
+    if (getUser.get(c.username)) return ack({ error: 'Esse nome de usuário já existe.' });
     try {
       await createUser(c.username, c.password);
     } catch (err) {
@@ -231,7 +294,8 @@ io.on('connection', (socket) => {
     const name = raw.trim();
     if (name.length < MIN_NAME || name.length > MAX_NAME) return ack({ error: `Nome deve ter entre ${MIN_NAME} e ${MAX_NAME} caracteres.` });
     try {
-      renameUser.run(name, username);
+      // 0 linhas = closure aponta para nome que não existe mais no banco (sessão dessincronizada)
+      if (renameUser.run(name, username).changes === 0) return ack({ error: 'Sessão desatualizada. Recarregue a página.' });
       renameSessions.run(name, username); // sessões existentes continuam válidas
     } catch {
       return ack({ error: 'Esse nome já existe.' });
@@ -250,7 +314,14 @@ io.on('connection', (socket) => {
     const msg = { username, text, ts: Date.now() };
     state.messages.push(msg);
     if (state.messages.length > MAX_HISTORY) state.messages.shift();
+    insertMsg.run(username, text, msg.ts);
+    trimMsgs.run(MAX_HISTORY);
     io.to(SERVER_NAME).emit('chat-message', msg);
+  });
+
+  // "Fulano está digitando…" — volatile: pode se perder na reconexão sem fazer falta
+  on('typing', () => {
+    if (loggedIn()) socket.to(SERVER_NAME).volatile.emit('typing', { username });
   });
 
   on('join-voice', (ack) => {
@@ -344,8 +415,8 @@ io.on('connection', (socket) => {
   on('disconnect', () => {
     if (!loggedIn()) return;
     leaveVoice();
-    state.users.delete(socket.id);
-    socket.to(SERVER_NAME).emit('user-left', { id: socket.id, username });
+    // delete pode já ter acontecido via dropStale: só notifica se éramos nós que removemos
+    if (state.users.delete(socket.id)) socket.to(SERVER_NAME).emit('user-left', { id: socket.id, username });
   });
 });
 

@@ -23,9 +23,11 @@ beforeEach(() => {
   state.users.clear();
   state.messages.length = 0;
   state.voice.clear();
+  state.muted.clear();
+  state.deafened.clear();
   state.sharing.clear();
   state.thumbs.clear();
-  db.exec('DELETE FROM users'); db.exec('DELETE FROM sessions');
+  db.exec('DELETE FROM users'); db.exec('DELETE FROM sessions'); db.exec('DELETE FROM messages');
 });
 
 function connect() {
@@ -311,6 +313,67 @@ test('chat: mensagem vazia ou sem login é ignorada', async () => {
   intruso.emit('chat-message', { text: 'invasor' });
   await sleep(100);
   assert.equal(state.messages.length, 0);
+});
+
+test('chat: mensagem persiste no banco (histórico sobrevive a restart)', async () => {
+  const a = await loggedClient('ana');
+  const gotA = once(a, 'chat-message');
+  a.emit('chat-message', { text: 'persistente' });
+  await gotA;
+  const rows = db.prepare('SELECT username, text FROM messages').all();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].username, 'ana');
+  assert.equal(rows[0].text, 'persistente');
+});
+
+test('typing: retransmite para os outros, não para quem digita nem sem login', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  const semLogin = await connect();
+
+  let selfEcho = false;
+  a.on('typing', () => { selfEcho = true; });
+  const got = once(b, 'typing');
+  a.emit('typing');
+  assert.equal((await got).username, 'ana');
+  assert.equal(selfEcho, false);
+
+  let leaked = false;
+  b.on('typing', () => { leaked = true; });
+  semLogin.emit('typing');
+  await sleep(80);
+  assert.equal(leaked, false);
+});
+
+test('anti-flood: rajada de chat esbarra no limite; eventos seguem funcionando depois', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  let received = 0;
+  b.on('chat-message', () => { received++; });
+  for (let i = 0; i < 60; i++) a.emit('chat-message', { text: 'flood ' + i });
+  await sleep(300);
+  assert.ok(received < 60, 'rajada deveria ser cortada, chegou tudo: ' + received);
+  assert.ok(received >= 10, 'limite não pode engolir o uso normal: ' + received);
+});
+
+test('conexão nova da mesma conta substitui a antiga (sem fantasma na lista)', async () => {
+  const a = await connect();
+  const reg = await emitAck(a, 'register', { username: 'ana', password: 'senha123' });
+  await joinVoice(a);
+  const oldId = a.id;
+
+  const watcher = await loggedClient('beto');
+  const superseded = once(a, 'session-superseded');
+  const left = once(watcher, 'user-left');
+
+  const b = await connect();
+  const res = await emitAck(b, 'resume', { token: reg.token });
+  assert.equal(res.ok, true);
+  await superseded;
+  assert.equal((await left).id, oldId, 'todos sabem que a conexão antiga saiu');
+  assert.equal(state.users.has(oldId), false, 'estado antigo limpo na hora');
+  assert.equal(state.voice.has(oldId), false, 'voz limpa também');
+  assert.ok(!res.users.some((u) => u.id === oldId), 'lista entregue já vem sem o fantasma');
 });
 
 // ---------- Voz ----------

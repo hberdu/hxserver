@@ -12,8 +12,8 @@ npm start
 Abra http://localhost:3000, crie uma conta (usuário + senha) e entre.
 
 - **Conta**: senha guardada no SQLite apenas como hash scrypt + salt único — irreversível, nenhum dev consegue ler a senha.
-- **Chat**: #geral, histórico das últimas 100 mensagens (em memória).
-- **Voz**: clique em "Voz" e permita o microfone. Áudio P2P (WebRTC mesh). Ícones monocromáticos, sons sintetizados (WebAudio) para mutar/desmutar, transmitir e sair.
+- **Chat**: #geral, histórico das últimas 100 mensagens persistido no SQLite (sobrevive a restart). Links clicáveis, mensagens seguidas agrupadas, indicador "fulano está digitando…", contador de não lidas no título da aba com som de alerta.
+- **Voz**: clique em "Voz" e permita o microfone. Áudio P2P (WebRTC mesh). Mutar (Ctrl+Shift+M) e silenciar o canal (Ctrl+Shift+D) com indicadores visíveis para todos (mic + headset, como no Discord); volume individual por participante (aparece no hover); sons sintetizados (WebAudio) para os eventos da call.
 - **Transmitir tela**: dentro da voz, botão de monitor — o seletor do navegador oferece tela inteira, janela ou aplicativo aberto (mesmo mecanismo do Discord).
 - **Assistir**: quem transmite ganha o badge vermelho **AO VIVO** ao lado do nome no canal de voz. Clique no badge para ver a prévia (atualizada a cada 3s) e então **Assistir** — o vídeo só é enviado a quem assiste.
 - Outra pessoa na mesma rede: http://SEU_IP:3000 (mic/tela fora de localhost exigem HTTPS).
@@ -53,4 +53,6 @@ npm test
 
 Node.js + Express + Socket.IO (auth, chat, sinalização), `node:sqlite` (contas), `crypto.scrypt` (hash de senha), WebRTC mesh (voz/tela), cliente HTML/JS puro.
 
-Limitações: mensagens em memória (somem no restart; contas persistem em `hx.db`); só STUN — NAT restritivo precisa de TURN em `RTC_CONFIG` (public/app.js).
+Anti-flood: token bucket por socket no servidor (chat, thumbs, tentativas de login). Conexão nova da mesma conta substitui a antiga (sem fantasmas na lista após reconexão).
+
+Limitações: só STUN — NAT restritivo precisa de TURN em `RTC_CONFIG` (public/app.js).

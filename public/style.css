@@ -1,13 +1,14 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1; height: 100vh; overflow: hidden; }
+body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1; height: 100vh; height: 100dvh; overflow: hidden; }
 .hidden { display: none !important; }
-.screen { height: 100vh; }
+.screen { height: 100vh; height: 100dvh; } /* dvh: teclado do celular não cobre o campo de mensagem */
 
 .icon { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
 
 /* Login */
 #login-screen { display: flex; align-items: center; justify-content: center; background: #1e1f22; }
 .login-box { background: #313338; padding: 32px; border-radius: 8px; width: 320px; display: flex; flex-direction: column; gap: 12px; }
+.login-box form { display: flex; flex-direction: column; gap: 12px; }
 .login-box h1 { color: #fff; text-align: center; }
 .login-box p { text-align: center; color: #b5bac1; font-size: 14px; }
 .login-box input { padding: 10px; border-radius: 4px; border: none; background: #1e1f22; color: #dbdee1; }
@@ -46,6 +47,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .voice-users li .mute-ind, .voice-users li .deaf-ind { display: none; color: #949ba4; }
 .voice-users li.muted .mute-ind, .voice-users li.deafened .deaf-ind { display: inline-flex; }
 .mute-ind .icon, .deaf-ind .icon { width: 14px; height: 14px; }
+.voice-users li .vol-slider { display: none; width: 64px; accent-color: #5865f2; flex-shrink: 0; }
+.voice-users li:hover .vol-slider { display: block; }
 .live-badge { background: #f23f43; color: #fff; font-size: 9px; font-weight: 700; letter-spacing: .4px; padding: 2px 5px; border-radius: 4px; margin-left: 8px; cursor: pointer; flex-shrink: 0; }
 .live-badge:hover { background: #d83134; }
 
@@ -63,7 +66,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .screens { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 16px; background: #1e1f22; max-height: 70vh; overflow-y: auto; align-content: flex-start; }
 
 /* Live aberta: chat sai de cena, lives ocupam o canal inteiro */
-.content.live-mode .messages, .content.live-mode .chat-form { display: none; }
+.content.live-mode .messages, .content.live-mode .chat-form, .content.live-mode #typing-line { display: none; }
 .content.live-mode .screens { max-height: none; flex: 1; }
 .content.live-mode .screen-tile video { max-height: 82vh; }
 .screen-tile { position: relative; flex: 1 1 var(--tile-w, 420px); max-width: 100%; }
@@ -83,6 +86,11 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .message .meta .time { color: #949ba4; font-size: 11px; }
 .message .text { font-size: 15px; word-wrap: break-word; }
 .message.system { color: #949ba4; font-size: 13px; font-style: italic; }
+.message.compact { padding-left: 48px; margin-top: -6px; } /* alinha com o texto da mensagem de cima */
+.message .text a { color: #00a8fc; }
+.message .text a:hover { text-decoration: underline; }
+
+#typing-line { min-height: 18px; padding: 0 16px 2px; font-size: 12px; color: #949ba4; font-style: italic; }
 
 .chat-form { display: flex; padding: 0 16px 20px; gap: 8px; }
 .chat-form input { flex: 1; padding: 11px 14px; border-radius: 8px; border: none; background: #383a40; color: #dbdee1; font-size: 15px; }
@@ -149,3 +157,12 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 
 /* Aviso de conexao */
 #conn-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: #f0b232; color: #1e1f22; text-align: center; padding: 6px; font-size: 13px; font-weight: 600; }
+
+/* Mobile: lista de membros some, sidebar vira gaveta aberta pelo hambúrguer */
+#menu-btn { display: none; background: none; border: none; color: #dbdee1; cursor: pointer; padding: 2px; margin-right: 10px; vertical-align: middle; }
+@media (max-width: 800px) {
+  .server-rail, .members { display: none; }
+  #menu-btn { display: inline-block; }
+  .sidebar { position: fixed; top: 0; bottom: 0; left: 0; z-index: 20; transform: translateX(-100%); transition: transform .2s; box-shadow: 2px 0 12px rgba(0,0,0,.4); }
+  .sidebar.open { transform: translateX(0); }
+}
