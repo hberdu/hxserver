@@ -222,7 +222,7 @@ const SERVERS = [
   { id: 'panteras', name: 'Panteras', voiceRooms: [
     { id: 'pan-1', name: 'Sala 1' }, { id: 'pan-2', name: 'Sala 2' }, { id: 'pan-3', name: 'Sala 3' },
   ] },
-  { id: 'serverb', name: 'Server B', voiceRooms: [
+  { id: 'serverb', name: 'Lady Club', voiceRooms: [
     { id: 'b-1', name: 'Sala 1' }, { id: 'b-2', name: 'Sala 2' }, { id: 'b-3', name: 'Sala 3' },
   ] },
 ];
@@ -360,6 +360,8 @@ io.on('connection', (socket) => {
   const curServer = () => state.viewing.get(socket.id) || DEFAULT_SERVER; // servidor que este socket vê
   const toServer = () => socket.to(srvRoom(curServer()));   // broadcast p/ os OUTROS do meu servidor
   const inServer = () => io.to(srvRoom(curServer()));       // broadcast p/ TODOS do meu servidor (incl. eu)
+  // Eventos de VOZ vão para o servidor DONO da sala (posso estar vendo outro servidor sem sair da call)
+  const toVoice = () => socket.to(srvRoom(ROOM_SERVER.get(state.voice.get(socket.id))));
 
   // Remove do estado uma conexão antiga da mesma conta (substituída ou já morta).
   // Deletes idempotentes: se o socket antigo ainda disparar 'disconnect', nada duplica.
@@ -369,7 +371,8 @@ io.on('connection', (socket) => {
       old.emit('session-superseded');
       setTimeout(() => old.disconnect(true), 100); // aviso chega antes de fechar
     }
-    const sv = state.viewing.get(id) || DEFAULT_SERVER; // servidor onde a conexão antiga estava
+    const sv = state.viewing.get(id) || DEFAULT_SERVER;             // servidor que a conexão antiga via
+    const voiceSv = srvRoom(ROOM_SERVER.get(state.voice.get(id)));  // servidor da sala de voz dela
     console.log(`[sessão] ${name}: conexão ${id} substituída por ${socket.id}`);
     state.users.delete(id);
     state.viewing.delete(id);
@@ -380,11 +383,11 @@ io.on('connection', (socket) => {
       const dur = Math.round((Date.now() - (shareStart.get(id) || Date.now())) / 1000);
       shareStart.delete(id);
       console.log(`[share] fim: ${name} após ${dur}s — motivo: sessão substituída por nova conexão da mesma conta`);
-      io.to(srvRoom(sv)).emit('screen-share', { id, username: name, on: false });
+      io.to(voiceSv).emit('screen-share', { id, username: name, on: false });
     }
     if (state.voice.delete(id)) {
       console.log(`[voz] saiu: ${name} — motivo: sessão substituída por nova conexão da mesma conta`);
-      io.to(srvRoom(sv)).emit('voice-user-left', { id });
+      io.to(voiceSv).emit('voice-user-left', { id });
     }
     io.to(srvRoom(sv)).emit('user-left', { id, username: name });
   }
@@ -425,11 +428,11 @@ io.on('connection', (socket) => {
     socket.to(srvRoom(DEFAULT_SERVER)).emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
   }
 
-  // Trocar de servidor: sai da voz, muda a sala do socket.io e entrega o retrato do novo servidor
+  // Trocar de servidor muda só o que você VÊ (chat/membros). A voz continua na sala em que você está,
+  // mesmo em outro servidor — dá para navegar sem cair da call (a presença de voz é por sala, não por view).
   function switchServer(sid, ack) {
     const from = state.viewing.get(socket.id);
     if (from === sid) return ack({ ok: true, avatars: onlineAvatars(sid), ...serverSnapshot(sid) });
-    leaveVoice('trocou de servidor'); // voz é por servidor: sair ao trocar
     socket.leave(srvRoom(from));
     socket.to(srvRoom(from)).emit('user-left', { id: socket.id, username });
     state.viewing.set(socket.id, sid);
@@ -621,7 +624,7 @@ io.on('connection', (socket) => {
     if (state.voice.has(socket.id)) leaveVoice('trocou de sala'); // sai da sala anterior antes de entrar na nova
     state.voice.set(socket.id, room);
     ack({ peers: voicePeers(room, socket.id), room });
-    toServer().emit('voice-user-joined', { id: socket.id, username, room });
+    toVoice().emit('voice-user-joined', { id: socket.id, username, room });
   });
 
   on('set-muted', (payload) => {
@@ -629,7 +632,7 @@ io.on('connection', (socket) => {
     const muted = !!(payload && payload.muted);
     if (muted) state.muted.add(socket.id);
     else state.muted.delete(socket.id);
-    toServer().emit('user-muted', { id: socket.id, muted });
+    toVoice().emit('user-muted', { id: socket.id, muted });
   });
 
   on('set-deafened', (payload) => {
@@ -637,16 +640,17 @@ io.on('connection', (socket) => {
     const deafened = !!(payload && payload.deafened);
     if (deafened) state.deafened.add(socket.id);
     else state.deafened.delete(socket.id);
-    toServer().emit('user-deafened', { id: socket.id, deafened });
+    toVoice().emit('user-deafened', { id: socket.id, deafened });
   });
 
   function stopSharing(reason = 'não especificado') {
     if (state.sharing.delete(socket.id)) {
+      const dest = toVoice(); // captura a sala antes de qualquer limpeza
       state.thumbs.delete(socket.id);
       const dur = Math.round((Date.now() - (shareStart.get(socket.id) || Date.now())) / 1000);
       shareStart.delete(socket.id);
       console.log(`[share] fim: ${username} após ${dur}s — motivo: ${reason}`);
-      toServer().emit('screen-share', { id: socket.id, username, on: false });
+      dest.emit('screen-share', { id: socket.id, username, on: false });
     }
   }
 
@@ -654,9 +658,11 @@ io.on('connection', (socket) => {
     stopSharing(reason);
     state.muted.delete(socket.id);
     state.deafened.delete(socket.id);
-    if (state.voice.delete(socket.id)) {
+    if (state.voice.has(socket.id)) {
+      const dest = toVoice(); // servidor da sala, antes de remover
+      state.voice.delete(socket.id);
       console.log(`[voz] saiu: ${username} — motivo: ${reason}`);
-      toServer().emit('voice-user-left', { id: socket.id });
+      dest.emit('voice-user-left', { id: socket.id });
     }
   }
 
@@ -682,7 +688,7 @@ io.on('connection', (socket) => {
         console.log(`[share] início: ${username} (${socket.id}) — ${state.voice.size} na voz, ${state.users.size} online`);
       }
       state.sharing.add(socket.id);
-      toServer().emit('screen-share', { id: socket.id, username, on: true });
+      toVoice().emit('screen-share', { id: socket.id, username, on: true });
     } else {
       // Motivo vem do cliente (botão do app, navegador encerrou a captura, etc.)
       const reason = payload && typeof payload.reason === 'string' ? payload.reason.slice(0, 120) : 'parada pelo usuário';
@@ -696,7 +702,7 @@ io.on('connection', (socket) => {
     const img = payload && payload.img;
     if (!validImage(img, MAX_THUMB)) return;
     state.thumbs.set(socket.id, img);
-    toServer().emit('screen-thumb', { id: socket.id, img });
+    toVoice().emit('screen-thumb', { id: socket.id, img });
   });
 
   // Espectador pede/encerra a transmissão de alguém (vídeo só vai para quem assiste)

@@ -98,6 +98,17 @@
     </aside>
   </div>
 
+  <!-- Sugestão de instalar como aplicativo (primeiro login) -->
+  <div id="install-overlay" class="hidden">
+    <div id="install-card">
+      <div class="install-logo"><svg viewBox="0 0 48 48"><text x="6" y="34" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="28" fill="#fff">H</text><text x="24" y="38" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="28" fill="#f23f43">X</text></svg></div>
+      <div id="install-title">Instalar o HX como aplicativo?</div>
+      <div id="install-text">Abre em janela própria, com ícone e notificações — igual a um app. Você pode instalar depois pelo menu do navegador.</div>
+      <button id="install-yes" class="btn-primary">Instalar</button>
+      <button id="install-no" class="secondary">Agora não</button>
+    </div>
+  </div>
+
   <!-- Prévia de transmissão: popup ao passar o mouse no badge "AO VIVO" -->
   <div id="live-preview" class="hidden">
     <img id="preview-img" alt="Prévia da transmissão">
@@ -168,6 +179,18 @@
           </span>
           <input id="noise-toggle" type="checkbox" checked>
         </label>
+        <label class="toggle-row">
+          <span>
+            Sensibilidade automática do microfone
+            <span class="section-hint">Fecha o mic quando você não está falando (evita ruído/mic aberto à toa).</span>
+          </span>
+          <input id="vad-toggle" type="checkbox">
+        </label>
+        <div class="vad-row hidden" id="vad-row">
+          <div class="vad-meter"><div class="vad-fill" id="vad-fill"></div><div class="vad-marker" id="vad-marker"></div></div>
+          <input id="vad-threshold" type="range" min="0" max="100" class="vol-range">
+          <span class="section-hint">Arraste a marca para logo acima do seu ruído de fundo. Fale para testar: a barra fica verde quando passa da marca (é aí que o mic abre).</span>
+        </div>
         <label class="toggle-row">
           <span>
             Push-to-talk

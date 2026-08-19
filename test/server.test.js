@@ -631,6 +631,31 @@ test('servidores: trocar isola chat/membros e valida salas por servidor', async 
   assert.equal((await joinVoice(a, 'akon')).room, 'akon', 'sala do hx funciona');
 });
 
+test('voz persiste ao trocar de servidor (não cai da call ao navegar)', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  await joinVoice(a, 'akon');  // ana entra na voz do hx
+  await joinVoice(b, 'akon');  // beto também
+
+  // ana troca de VIEW para panteras, mas continua na voz do hx
+  const pan = await emitAck(a, 'switch-server', { server: 'panteras' });
+  assert.equal(pan.ok, true);
+  assert.equal(state.voice.get(a.id), 'akon', 'ana continua na sala de voz akon');
+
+  // quem entra no hx ainda vê ana na voz do akon
+  const c = await connect();
+  const rc = await emitAck(c, 'register', { username: 'carla', password: 'senha123' });
+  const voz = rc.voiceUsers.find((u) => u.id === a.id);
+  assert.ok(voz && voz.room === 'akon', 'ana aparece na voz do hx mesmo vendo panteras');
+
+  // mutar enquanto vê panteras propaga para o servidor da SALA (hx), não para panteras
+  const gotB = once(b, 'user-muted'); // b está no hx
+  a.emit('set-muted', { muted: true });
+  const ev = await gotB;
+  assert.equal(ev.id, a.id);
+  assert.equal(ev.muted, true);
+});
+
 test('sinalização: relay só entre membros do canal de voz', async () => {
   const a = await loggedClient('ana');
   const b = await loggedClient('beto');

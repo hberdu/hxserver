@@ -63,6 +63,28 @@ $('install-btn').onclick = async () => {
   await p.userChoice.catch(() => {});
 };
 
+// Sugere instalar como app na PRIMEIRA vez que o usuário entra (uma vez por dispositivo)
+function maybeSuggestInstall() {
+  if (localStorage.getItem('hx-install-done')) return;
+  const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone;
+  if (standalone) { localStorage.setItem('hx-install-done', '1'); return; } // já instalado
+  localStorage.setItem('hx-install-done', '1'); // mostra só nesta primeira vez
+  $('install-overlay').classList.remove('hidden');
+}
+$('install-yes').onclick = async () => {
+  $('install-overlay').classList.add('hidden');
+  if (installPrompt) {
+    const p = installPrompt;
+    installPrompt = null;
+    $('install-btn').classList.add('hidden');
+    p.prompt();
+    await p.userChoice.catch(() => {});
+  } else {
+    systemMessage('Para instalar: menu do navegador → "Instalar aplicativo" (ou ícone na barra de endereço).');
+  }
+};
+$('install-no').onclick = () => $('install-overlay').classList.add('hidden');
+
 // ---------- Avatares (foto do perfil, ou inicial com cor determinística) ----------
 const avatares = new Map(); // username -> data URL da foto
 
@@ -188,6 +210,7 @@ function enterApp(res) {
   applyServerView(res); // canal, mensagens, membros, voz e transmissões do servidor atual
   $('chat-input').focus();
   renderNetStatus();
+  maybeSuggestInstall(); // primeiro login neste dispositivo: sugere instalar como app
 }
 
 // Monta a tela para o servidor do snapshot (usado no login e ao trocar de servidor)
@@ -205,6 +228,7 @@ function applyServerView(res) {
   onlineNames.clear();
   sharers.clear();
   renderVoiceRooms(res.voiceRooms || []);
+  if (inVoice) setActiveRoom(currentRoom); // se minha sala for deste servidor, realça (senão no-op)
   (res.messages || []).forEach(renderMessage);
   (res.users || []).forEach((user) => addUser(user.id, user.username));
   renderOffline();
@@ -236,15 +260,10 @@ const SERVER_LOGOS = {
     + '<text x="8" y="33" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#fff">H</text>'
     + '<text x="23" y="37" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#f23f43">X</text>'
     + '</svg>',
-  // Panteras: patinha de pantera (almofada + 4 dedos)
-  panteras: '<svg viewBox="0 0 48 48">'
-    + '<ellipse cx="24" cy="31" rx="9.5" ry="7.5" fill="#fff"/>'
-    + '<ellipse cx="12.5" cy="21" rx="3.4" ry="4.6" fill="#fff"/>'
-    + '<ellipse cx="20" cy="15" rx="3.4" ry="4.9" fill="#fff"/>'
-    + '<ellipse cx="28" cy="15" rx="3.4" ry="4.9" fill="#fff"/>'
-    + '<ellipse cx="35.5" cy="21" rx="3.4" ry="4.6" fill="#fff"/>'
-    + '</svg>',
 };
+
+// Fotos de servidor (arquivos em public/icons/). Sem o arquivo, cai nas iniciais.
+const SERVER_PHOTOS = { panteras: 'icons/panteras.png', serverb: 'icons/lady-club.png' };
 
 function renderServerRail(servers, active) {
   serverList = servers;
@@ -255,8 +274,18 @@ function renderServerRail(servers, active) {
     el.className = 'rail-icon' + (s.id === active ? ' active' : '');
     el.id = 'rail-' + s.id;
     el.title = s.name;
-    if (SERVER_LOGOS[s.id]) el.innerHTML = SERVER_LOGOS[s.id]; // SVG estático (constante do código)
-    else el.textContent = serverInitials(s.name);
+    if (SERVER_LOGOS[s.id]) {
+      el.innerHTML = SERVER_LOGOS[s.id]; // SVG estático (constante do código)
+    } else if (SERVER_PHOTOS[s.id]) {
+      const img = document.createElement('img');
+      img.className = 'rail-photo';
+      img.src = SERVER_PHOTOS[s.id];
+      img.alt = s.name;
+      img.onerror = () => { el.replaceChildren(); el.textContent = serverInitials(s.name); }; // sem arquivo → iniciais
+      el.appendChild(img);
+    } else {
+      el.textContent = serverInitials(s.name);
+    }
     el.onclick = () => switchToServer(s.id);
     rail.appendChild(el);
   });
@@ -266,7 +295,7 @@ function switchToServer(sid) {
   if (!sid || sid === currentServerId) return;
   socket.emit('switch-server', { server: sid }, (res) => {
     if (!res || res.error) { systemMessage((res && res.error) || 'Falha ao trocar de servidor.'); return; }
-    if (inVoice) leaveVoice(); // voz é por servidor: sai da call ao trocar (servidor já removeu do estado)
+    // A voz continua: só troca o que aparece (chat/membros). A call segue rodando por baixo.
     applyServerView(res);
     renderNetStatus();
   });
@@ -629,6 +658,7 @@ let inVoice = false;
 let currentRoom = null;   // id da sala de voz atual (null = fora da voz)
 let voiceRooms = [];      // [{id, name}] recebidas do servidor
 let localStream = null;   // microfone
+let micMonitor = null;    // clone do mic só para medir nível (imune ao gate do VAD)
 let screenStream = null;  // tela
 
 // Renderiza as salas de voz (fonte é o servidor): cada sala é um canal clicável + lista de gente
@@ -714,16 +744,44 @@ $('mute-btn').onclick = toggleMute;
 $('deafen-btn').onclick = toggleDeafen;
 $('screen-btn').onclick = toggleScreen;
 
-// ---------- Push-to-talk (segurar a tecla para falar; só com a aba focada — limite do navegador)
+// ---------- Modo de entrada do microfone: automático (VAD) ou push-to-talk ----------
 let pttOn = localStorage.getItem('hx-ptt') === 'on';
 let pttKey = localStorage.getItem('hx-ptt-key') || 'Backquote';
+let vadEnabled = localStorage.getItem('hx-vad') === 'on';
+let vadThreshold = Math.min(100, Math.max(0, +(localStorage.getItem('hx-vad-threshold') ?? 20))); // 0-100
 
 $('ptt-toggle').onchange = () => {
   pttOn = $('ptt-toggle').checked;
   localStorage.setItem('hx-ptt', pttOn ? 'on' : 'off');
   $('ptt-key-row').classList.toggle('hidden', !pttOn);
-  if (inVoice && !deafened) setMuted(pttOn, false); // ligou: mic fecha e espera a tecla
+  if (pttOn && vadEnabled) { vadEnabled = false; localStorage.setItem('hx-vad', 'off'); syncInputUi(); } // exclusivos
+  applyMic();
 };
+
+$('vad-toggle').onchange = () => {
+  vadEnabled = $('vad-toggle').checked;
+  localStorage.setItem('hx-vad', vadEnabled ? 'on' : 'off');
+  $('vad-row').classList.toggle('hidden', !vadEnabled);
+  if (vadEnabled && pttOn) { pttOn = false; localStorage.setItem('hx-ptt', 'off'); syncInputUi(); } // exclusivos
+  applyMic();
+};
+
+$('vad-threshold').oninput = () => {
+  vadThreshold = +$('vad-threshold').value;
+  localStorage.setItem('hx-vad-threshold', vadThreshold);
+  $('vad-marker').style.left = vadThreshold + '%';
+};
+
+// Reflete no perfil os estados de PTT/VAD (usado ao abrir e ao alternar exclusivos)
+function syncInputUi() {
+  $('ptt-toggle').checked = pttOn;
+  $('ptt-key-row').classList.toggle('hidden', !pttOn);
+  $('ptt-key').value = pttKey;
+  $('vad-toggle').checked = vadEnabled;
+  $('vad-row').classList.toggle('hidden', !vadEnabled);
+  $('vad-threshold').value = vadThreshold;
+  $('vad-marker').style.left = vadThreshold + '%';
+}
 
 $('ptt-key').onkeydown = (e) => {
   e.preventDefault();
@@ -747,12 +805,12 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     toggleDeafen();
   } else if (pttOn && inVoice && !deafened && e.code === pttKey && !e.repeat && !isTypingTarget(e.target)) {
-    setMuted(false, false); // tecla pressionada: fala
+    pttHeld = true; applyMic(); // tecla pressionada: fala
   }
 });
 
 document.addEventListener('keyup', (e) => {
-  if (pttOn && inVoice && !deafened && e.code === pttKey && !isTypingTarget(e.target)) setMuted(true, false);
+  if (pttOn && inVoice && e.code === pttKey && !isTypingTarget(e.target)) { pttHeld = false; applyMic(); }
 });
 
 // PTT não dispara enquanto se digita (tecla configurada como Enter/letra escreveria E mutaria)
@@ -798,9 +856,13 @@ async function joinVoice(room) {
     currentRoom = res.room;
     setActiveRoom(res.room);
     $('voice-controls').classList.remove('hidden');
-    addVoiceUser(selfId, username, false, false, res.room);
-    if (pttOn) setMuted(true, false); // push-to-talk: entra mutado esperando a tecla
-    if (!meters.has(selfId)) attachSpeaking(selfId, localStream);
+    addVoiceUser(selfId, username, manualMuted, deafened, res.room);
+    // Medidor lê um CLONE do mic (sempre vivo), senão o gate do VAD fecharia o track e cegaria o medidor
+    if (!meters.has(selfId)) {
+      micMonitor = new MediaStream([localStream.getAudioTracks()[0].clone()]);
+      attachSpeaking(selfId, micMonitor);
+    }
+    applyMic(); // estado inicial do mic (PTT/VAD fecham; senão abre, salvo mute)
     playSound('userJoin'); // toca também para quem entrou, não só para quem já estava
     sessionStorage.setItem('hx-voice-room', res.room); // volta pra mesma sala sozinho se cair
     // Novato inicia a conexão com cada participante já presente na sala
@@ -840,8 +902,12 @@ function leaveVoice() {
   peers.forEach((_, id) => removePeer(id));
   localStream?.getTracks().forEach((t) => t.stop());
   localStream = null;
+  micMonitor?.getTracks().forEach((t) => t.stop());
+  micMonitor = null;
+  pttHeld = false; vadOpen = false;
   $('voice-controls').classList.add('hidden');
   removeVoiceUser(selfId);
+  manualMuted = false;
   $('mute-btn').classList.remove('active');
   $('mute-btn').setAttribute('aria-pressed', false);
   $('mute-icon').setAttribute('href', '#i-mic');
@@ -855,17 +921,35 @@ function leaveVoice() {
 }
 
 let deafened = false;
+let manualMuted = false;       // botão de mute (mic-off visível aos outros) — fonte da verdade do mute
 let mutedBeforeDeafen = false; // mute explícito anterior ao deafen: preservado ao sair (como no Discord)
+let pttHeld = false;           // tecla de push-to-talk pressionada agora
+let vadOpen = false;           // gate do VAD aberto agora (setado pelo medidor)
 
-function setMuted(muted, sound = true) {
+// Decide se o mic transmite, combinando mute/deafen/push-to-talk/VAD numa fonte só
+function micShouldBeOpen() {
+  if (manualMuted || deafened || !inVoice) return false;
+  if (pttOn) return pttHeld;       // push-to-talk: só com a tecla
+  if (vadEnabled) return vadOpen;  // sensibilidade automática: só quando detecta fala
+  return true;                     // aberto o tempo todo
+}
+
+// Aplica o estado calculado ao track do microfone (só o toque final em track.enabled)
+function applyMic() {
   const track = localStream?.getAudioTracks()[0];
-  if (!track || track.enabled !== muted) return; // já está no estado pedido
-  track.enabled = !muted;
+  if (track) { const open = micShouldBeOpen(); if (track.enabled !== open) track.enabled = open; }
+}
+
+// Mute manual (botão): mostra o ícone mic-off para todos e emite. O gate do VAD NÃO passa por aqui.
+function setMuted(muted, sound = true) {
+  if (manualMuted === muted) return;
+  manualMuted = muted;
   $('mute-btn').classList.toggle('active', muted);
   $('mute-btn').setAttribute('aria-pressed', muted);
   $('mute-icon').setAttribute('href', muted ? '#i-mic-off' : '#i-mic');
   setVoiceMuted(selfId, muted);
   socket.emit('set-muted', { muted });
+  applyMic();
   if (sound) playSound(muted ? 'mute' : 'unmute');
 }
 
@@ -873,14 +957,13 @@ function toggleMute() {
   if (!localStream) return;
   // Clicar no mic estando silenciado = quero falar: sai do deafen com o mic aberto
   if (deafened) { mutedBeforeDeafen = false; toggleDeafen(); return; }
-  setMuted(localStream.getAudioTracks()[0].enabled);
+  setMuted(!manualMuted);
 }
 
 // Silenciar o canal: para de ouvir todo mundo e também fecha o próprio microfone
 function toggleDeafen() {
   if (!inVoice) return;
   deafened = !deafened;
-  if (deafened) mutedBeforeDeafen = !(localStream?.getAudioTracks()[0]?.enabled ?? true);
   document.querySelectorAll('audio[id^="audio-"]').forEach((a) => { a.muted = deafened; });
   // Silenciado também cala o áudio das lives dos outros (mas nunca a própria tela)
   document.querySelectorAll('.screen-tile video').forEach((v) => {
@@ -890,8 +973,11 @@ function toggleDeafen() {
   $('deafen-btn').setAttribute('aria-pressed', deafened);
   $('deafen-icon').setAttribute('href', deafened ? '#i-headset-off' : '#i-headset');
   setVoiceDeafened(selfId, deafened);
-  socket.emit('set-deafened', { deafened }); // setMuted não emite se o mic já estava fechado
-  setMuted(deafened ? true : mutedBeforeDeafen, false); // sair do deafen devolve o estado anterior do mic
+  socket.emit('set-deafened', { deafened });
+  // Deafen implica mute (mostra mic-off também); ao sair, devolve o mute anterior
+  if (deafened) { mutedBeforeDeafen = manualMuted; setMuted(true, false); }
+  else setMuted(mutedBeforeDeafen, false);
+  applyMic();
   playSound(deafened ? 'mute' : 'unmute');
 }
 
@@ -1009,24 +1095,38 @@ function voiceAvatar(id) {
 const SPEAK_ON = 5;
 const SPEAK_OFF = 3;
 const SPEAK_HOLD_MS = 1200;
+const VAD_MAX_RMS = 32; // topo da escala do medidor: mapeia o slider 0-100 para o limiar de RMS
+
+// Limiar do VAD em RMS, a partir do slider 0-100 (mesma escala do medidor no perfil)
+function vadOnLevel() { return 1 + (vadThreshold / 100) * VAD_MAX_RMS; }
 
 function pollSpeaking() {
   const now = performance.now();
+  const gateOn = vadOnLevel();
   meters.forEach((m, id) => {
     m.analyser.getByteTimeDomainData(m.data);
     let sum = 0;
     for (const v of m.data) { const d = v - 128; sum += d * d; }
     const level = Math.sqrt(sum / m.data.length);
+    m.level = level; // exposto para o medidor do perfil
 
-    if (level > SPEAK_ON) m.lastLoud = now;
+    // No meu próprio avatar com VAD ligado, o contorno verde usa o MESMO limiar do gate (sincronizados)
+    const selfVad = id === selfId && vadEnabled && inVoice && !deafened;
+    const onL = selfVad ? gateOn : SPEAK_ON;
+    const offL = selfVad ? gateOn * 0.7 : SPEAK_OFF;
+
+    if (level > onL) m.lastLoud = now;
     const speaking = m.speaking
-      ? (level > SPEAK_OFF || now - (m.lastLoud || 0) < SPEAK_HOLD_MS)
-      : level > SPEAK_ON;
+      ? (level > offL || now - (m.lastLoud || 0) < SPEAK_HOLD_MS)
+      : level > onL;
 
     if (speaking !== m.speaking) {
       m.speaking = speaking;
       voiceAvatar(id)?.classList.toggle('speaking', speaking);
     }
+
+    // Gate do microfone: com VAD ligado, o mic só transmite enquanto estou "falando" (verde aceso)
+    if (id === selfId && vadEnabled && !pttOn) { vadOpen = m.speaking; applyMic(); }
   });
 }
 
@@ -1406,13 +1506,26 @@ $('user-footer').onclick = () => {
   $('profile-display-name').textContent = username;
   $('rename-input').value = username;
   $('noise-toggle').checked = noiseSuppression;
-  $('ptt-toggle').checked = pttOn;
-  $('ptt-key').value = pttKey;
-  $('ptt-key-row').classList.toggle('hidden', !pttOn);
+  syncInputUi(); // PTT + VAD (toggles, tecla, limiar)
   $('profile-error').textContent = '';
   $('profile-ok').textContent = '';
   $('profile-overlay').classList.remove('hidden');
+  startVadMeter(); // medidor ao vivo do microfone enquanto o perfil está aberto
 };
+
+// Medidor ao vivo do mic no perfil (barra verde) — sincronizado com o mesmo nível do contorno de fala
+let vadMeterTimer = null;
+function startVadMeter() {
+  clearInterval(vadMeterTimer);
+  const fill = $('vad-fill');
+  vadMeterTimer = setInterval(() => {
+    if ($('profile-overlay').classList.contains('hidden')) { clearInterval(vadMeterTimer); vadMeterTimer = null; return; }
+    const lvl = meters.get(selfId)?.level ?? 0; // nível do clone do mic (mesmo do contorno verde)
+    fill.style.width = Math.min(100, (lvl / VAD_MAX_RMS) * 100) + '%';
+    // acende verde quando passa do limiar (bate com o gate/contorno)
+    fill.classList.toggle('over', lvl >= vadOnLevel());
+  }, 100);
+}
 
 $('noise-toggle').onchange = applyMicSettings;
 
