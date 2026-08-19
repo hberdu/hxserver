@@ -229,6 +229,23 @@ function serverName(id) {
   return (serverList.find((s) => s.id === id) || {}).name || 'HX';
 }
 
+// Logos personalizadas por servidor (SVG estático e confiável — sem risco de XSS).
+// Servidor sem logo aqui cai nas iniciais (ex.: Server B).
+const SERVER_LOGOS = {
+  hx: '<svg viewBox="0 0 48 48">'
+    + '<text x="8" y="33" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#fff">H</text>'
+    + '<text x="23" y="37" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#f23f43">X</text>'
+    + '</svg>',
+  // Panteras: patinha de pantera (almofada + 4 dedos)
+  panteras: '<svg viewBox="0 0 48 48">'
+    + '<ellipse cx="24" cy="31" rx="9.5" ry="7.5" fill="#fff"/>'
+    + '<ellipse cx="12.5" cy="21" rx="3.4" ry="4.6" fill="#fff"/>'
+    + '<ellipse cx="20" cy="15" rx="3.4" ry="4.9" fill="#fff"/>'
+    + '<ellipse cx="28" cy="15" rx="3.4" ry="4.9" fill="#fff"/>'
+    + '<ellipse cx="35.5" cy="21" rx="3.4" ry="4.6" fill="#fff"/>'
+    + '</svg>',
+};
+
 function renderServerRail(servers, active) {
   serverList = servers;
   const rail = $('server-rail');
@@ -238,7 +255,8 @@ function renderServerRail(servers, active) {
     el.className = 'rail-icon' + (s.id === active ? ' active' : '');
     el.id = 'rail-' + s.id;
     el.title = s.name;
-    el.textContent = serverInitials(s.name);
+    if (SERVER_LOGOS[s.id]) el.innerHTML = SERVER_LOGOS[s.id]; // SVG estático (constante do código)
+    else el.textContent = serverInitials(s.name);
     el.onclick = () => switchToServer(s.id);
     rail.appendChild(el);
   });
