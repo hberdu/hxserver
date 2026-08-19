@@ -1,5 +1,5 @@
 // Service worker: app shell em cache (stale-while-revalidate); tempo real nunca passa por aqui
-const CACHE = 'hx-v8';
+const CACHE = 'hx-v9';
 const ASSETS = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

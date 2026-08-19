@@ -59,17 +59,15 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .content { flex: 1; display: flex; flex-direction: column; background: #313338; }
 .channel-title { padding: 14px 16px; font-weight: 700; color: #fff; border-bottom: 1px solid #26272b; }
 
-/* Grid de lives: colunas = ceil(sqrt(n)) - 1 live cheia, ate 4 em 2x2, ate 9 em 3x3, e assim por diante.
-   O scroll do mouse ajusta --cols para dar zoom (menos colunas = lives maiores). */
-.screens { display: grid; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); gap: 10px;
-  padding: 10px 16px; background: #1e1f22; max-height: 70vh; overflow-y: auto; align-content: start; }
+/* Telas assistidas — grid flexível; zoom com scroll via --tile-w */
+.screens { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 16px; background: #1e1f22; max-height: 70vh; overflow-y: auto; align-content: flex-start; }
 
 /* Live aberta: chat sai de cena, lives ocupam o canal inteiro */
 .content.live-mode .messages, .content.live-mode .chat-form { display: none; }
 .content.live-mode .screens { max-height: none; flex: 1; }
-.screen-tile { position: relative; min-width: 0; }
-.screen-tile.focused { grid-column: 1 / -1; }
-.screen-tile video { width: 100%; max-height: calc(var(--live-h, 62vh) / var(--rows, 1)); object-fit: contain; border-radius: 6px; background: #000; display: block; }
+.content.live-mode .screen-tile video { max-height: 82vh; }
+.screen-tile { position: relative; flex: 1 1 var(--tile-w, 420px); max-width: 100%; }
+.screen-tile video { width: 100%; max-height: 64vh; object-fit: contain; border-radius: 6px; background: #000; display: block; }
 .screen-tile .label { position: absolute; bottom: 6px; left: 6px; background: rgba(0,0,0,.7); color: #fff; font-size: 12px; padding: 2px 8px; border-radius: 4px; }
 .screen-tile .controls { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
 .screen-tile:hover .controls { opacity: 1; }
@@ -148,25 +146,6 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #profile-close { position: absolute; top: 12px; right: 12px; background: none; border: none; color: #b5bac1; cursor: pointer; z-index: 1; }
 #profile-close:hover { color: #fff; }
 #profile-close .icon { width: 18px; height: 18px; }
-
-/* Carrossel: todas as lives abertas, mesmo as que nao estou assistindo */
-.live-strip { display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: #1a1b1e; border-bottom: 1px solid #26272b; }
-.strip-track { display: flex; gap: 8px; overflow-x: auto; scroll-behavior: smooth; flex: 1; scrollbar-width: thin; }
-.strip-track::-webkit-scrollbar { height: 6px; }
-.strip-track::-webkit-scrollbar-thumb { background: #4e5058; border-radius: 3px; }
-.strip-nav { flex-shrink: 0; border: none; background: #2b2d31; color: #b5bac1; border-radius: 4px; padding: 12px 4px; cursor: pointer; }
-.strip-nav:hover { background: #404249; color: #fff; }
-.strip-nav .icon { width: 16px; height: 16px; }
-
-.strip-item { position: relative; flex: 0 0 168px; border-radius: 6px; overflow: hidden; background: #000; cursor: pointer; border: 2px solid transparent; }
-.strip-item:hover { border-color: #5865f2; }
-.strip-item.watching { border-color: #23a559; }
-.strip-item img, .strip-item .strip-placeholder { width: 100%; height: 94px; object-fit: cover; display: block; }
-.strip-placeholder { display: flex; align-items: center; justify-content: center; background: #232428; color: #949ba4; font-size: 11px; }
-.strip-item .strip-name { padding: 4px 6px; font-size: 12px; color: #dbdee1; background: #232428; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.strip-item .strip-live { position: absolute; top: 4px; left: 4px; background: #f23f43; color: #fff; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px; }
-.strip-item .strip-action { position: absolute; top: 32px; left: 0; right: 0; display: flex; align-items: center; justify-content: center; color: #fff; opacity: 0; transition: opacity .15s; text-shadow: 0 1px 4px #000; }
-.strip-item:hover .strip-action { opacity: 1; }
 
 /* Aviso de conexao */
 #conn-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: #f0b232; color: #1e1f22; text-align: center; padding: 6px; font-size: 13px; font-weight: 600; }

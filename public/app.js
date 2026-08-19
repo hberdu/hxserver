@@ -168,7 +168,6 @@ function enterApp(res) {
     sharers.set(s.id, { username: s.username, thumb: s.thumb });
     updateBadge(s.id, true);
   });
-  renderLiveStrip();
   scrollMessages();
 }
 
@@ -347,7 +346,6 @@ function leaveVoice() {
   deafened = false;
   $('deafen-btn').classList.remove('active');
   $('deafen-icon').setAttribute('href', '#i-headset');
-  renderLiveStrip();
   playSound('leave');
   if (previewId) updatePreview();
 }
@@ -601,9 +599,7 @@ async function toggleScreen() {
   track.onended = () => stopScreen(); // botão "parar compartilhamento" do navegador
   addScreenTile(selfId, screenStream, true);
   socket.emit('screen-share', { on: true });
-  sharers.set(selfId, { username, thumb: null }); // aparece no meu próprio carrossel
   updateBadge(selfId, true);
-  renderLiveStrip();
   $('screen-btn').classList.add('active');
   playSound('screenOn');
   thumbTimer = setInterval(sendThumb, 3000);
@@ -622,9 +618,7 @@ function stopScreen(sound = true) {
   screenStream = null;
   removeScreenTile(selfId);
   socket.emit('screen-share', { on: false });
-  sharers.delete(selfId);
   updateBadge(selfId, false);
-  renderLiveStrip();
   $('screen-btn').classList.remove('active');
   if (sound) playSound('screenOff');
 }
@@ -636,10 +630,7 @@ function sendThumb() {
   canvas.width = 320;
   canvas.height = Math.round(320 * video.videoHeight / video.videoWidth) || 180;
   canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-  const img = canvas.toDataURL('image/jpeg', 0.5);
-  socket.emit('screen-thumb', { img });
-  const mine = sharers.get(selfId);
-  if (mine && !mine.thumb) { mine.thumb = img; renderLiveStrip(); } // primeira prévia da minha live
+  socket.emit('screen-thumb', { img: canvas.toDataURL('image/jpeg', 0.5) });
 }
 
 // Codec: VP9 comprime ~30-40% melhor que o VP8 padrão — mais qualidade no mesmo bitrate
@@ -698,7 +689,6 @@ socket.on('screen-share', ({ id, username: name, on }) => {
   } else {
     sharerGone(id);
   }
-  renderLiveStrip();
 });
 
 socket.on('screen-thumb', ({ id, img }) => {
@@ -706,7 +696,6 @@ socket.on('screen-thumb', ({ id, img }) => {
   if (!s || typeof img !== 'string') return;
   s.thumb = img;
   if (previewId === id) updatePreview();
-  if (!watching.has(id)) renderLiveStrip(); // prévia atualizada no carrossel
 });
 
 function sharerGone(id) {
@@ -715,7 +704,6 @@ function sharerGone(id) {
   watching.delete(id);
   removeScreenTile(id);
   if (previewId === id) closePreview();
-  renderLiveStrip();
 }
 
 function updateBadge(id, on) {
@@ -890,52 +878,6 @@ $('avatar-file').onchange = async () => {
   });
 };
 
-// ---------- Carrossel: todas as transmissões abertas, assistindo ou não ----------
-$('strip-prev').onclick = () => $('strip-track').scrollBy({ left: -352, behavior: 'smooth' });
-$('strip-next').onclick = () => $('strip-track').scrollBy({ left: 352, behavior: 'smooth' });
-
-function renderLiveStrip() {
-  const track = $('strip-track');
-  const list = [...sharers.entries()];
-  $('live-strip').classList.toggle('hidden', list.length === 0);
-  track.replaceChildren();
-
-  for (const [id, info] of list) {
-    const item = document.createElement('div');
-    item.className = 'strip-item';
-    const isSelf = id === selfId;
-    const isWatching = isSelf || watching.has(id);
-    item.classList.toggle('watching', isWatching);
-
-    if (info.thumb) {
-      const img = document.createElement('img');
-      img.src = info.thumb;
-      img.alt = 'Prévia de ' + info.username;
-      item.appendChild(img);
-    } else {
-      const ph = document.createElement('div');
-      ph.className = 'strip-placeholder';
-      ph.textContent = 'Sem prévia ainda';
-      item.appendChild(ph);
-    }
-
-    const live = document.createElement('span');
-    live.className = 'strip-live';
-    live.textContent = 'AO VIVO';
-    const name = document.createElement('div');
-    name.className = 'strip-name';
-    name.textContent = isSelf ? 'Sua tela' : info.username;
-    const action = document.createElement('div');
-    action.className = 'strip-action';
-    action.innerHTML = '<svg class="icon"><use href="#i-' + (isWatching ? 'x' : 'play') + '"/></svg>';
-    item.append(live, action, name);
-
-    item.title = isSelf ? 'Sua transmissão' : (isWatching ? 'Parar de assistir' : 'Assistir');
-    if (!isSelf) item.onclick = () => toggleWatch(id);
-    track.appendChild(item);
-  }
-}
-
 function toggleWatch(id) {
   if (!inVoice) { systemMessage('Entre no canal de voz para assistir.'); return; }
   if (watching.has(id)) {
@@ -948,11 +890,9 @@ function toggleWatch(id) {
       if (!res || !res.ok) { // transmissão acabou de encerrar
         watching.delete(id);
         removeScreenTile(id);
-        renderLiveStrip();
       }
     });
   }
-  renderLiveStrip();
   if (previewId) updatePreview();
 }
 
@@ -965,38 +905,29 @@ function tileButton(iconId, title, onClick) {
   return b;
 }
 
-// Grid: colunas = ceil(sqrt(n)) — 1 cheia, até 4 em 2x2, até 9 em 3x3, 16 em 4x4…
-// zoomOffset (scroll do mouse) tira/põe colunas para aumentar ou diminuir as lives.
-let zoomOffset = 0;
-
 function updateLiveMode() {
-  const screens = $('screens');
-  const n = screens.children.length;
-  screens.classList.toggle('hidden', n === 0);
-  document.querySelector('.content').classList.toggle('live-mode', n > 0);
-  if (!n) { zoomOffset = 0; return; }
-
-  const auto = Math.ceil(Math.sqrt(n));
-  const cols = Math.max(1, Math.min(n, auto + zoomOffset));
-  const rows = Math.ceil(n / cols);
-  screens.style.setProperty('--cols', cols);
-  screens.style.setProperty('--rows', rows);
+  const live = $('screens').children.length > 0;
+  $('screens').classList.toggle('hidden', !live);
+  document.querySelector('.content').classList.toggle('live-mode', live);
 }
-
-// Scroll sobre a área de lives = zoom (menos colunas = lives maiores)
-$('screens').addEventListener('wheel', (e) => {
-  if (!$('screens').children.length) return;
-  e.preventDefault();
-  zoomOffset += e.deltaY < 0 ? -1 : 1;
-  zoomOffset = Math.max(-3, Math.min(3, zoomOffset));
-  updateLiveMode();
-}, { passive: false });
 
 function addScreenTile(id, stream, muted = false) {
   removeScreenTile(id);
   const tile = document.createElement('div');
   tile.className = 'screen-tile';
   tile.id = 'screen-' + id;
+  let width = 420;
+  const setWidth = (w) => {
+    width = Math.max(240, Math.min(1400, w));
+    tile.style.setProperty('--tile-w', width + 'px');
+  };
+  setWidth(width);
+  // Zoom com o scroll do mouse sobre a live
+  tile.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    setWidth(width + (e.deltaY < 0 ? 60 : -60));
+  }, { passive: false });
+
   const video = document.createElement('video');
   video.autoplay = true;
   video.playsInline = true;
@@ -1009,15 +940,7 @@ function addScreenTile(id, stream, muted = false) {
 
   const controls = document.createElement('div');
   controls.className = 'controls';
-  const expandBtn = tileButton('expand', 'Expandir', () => {
-    const focused = tile.classList.toggle('focused');
-    expandBtn.querySelector('use').setAttribute('href', focused ? '#i-shrink' : '#i-expand');
-    updateLiveMode();
-  });
-  controls.append(
-    expandBtn,
-    tileButton('fullscreen', 'Tela cheia', () => video.requestFullscreen?.().catch(() => {})),
-  );
+  controls.append(tileButton('fullscreen', 'Tela cheia', () => video.requestFullscreen?.().catch(() => {})));
   video.ondblclick = () => video.requestFullscreen?.().catch(() => {});
 
   tile.append(video, label, controls);
