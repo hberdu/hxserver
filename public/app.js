@@ -13,6 +13,17 @@ function fxIn(el, opts = {}) {
 function fxModal(overlay) {
   if (fx && overlay) fx.from(overlay.firstElementChild, { opacity: 0, scale: 0.97, y: 8, duration: 0.2, ease: 'power2.out', clearProps: 'all' });
 }
+// Toque em botão de estado (mute/deafen/servidor): pulso tátil curto
+function fxTap(el) {
+  if (fx && el) fx.fromTo(el, { scale: 0.86 }, { scale: 1, duration: 0.3, ease: 'back.out(2.5)', clearProps: 'transform' });
+}
+// Saída de item: fade rápido subindo, remove do DOM no fim (sem GSAP remove na hora)
+function fxOut(el, done) {
+  if (!el) { if (done) done(); return; }
+  if (!fx) { el.remove(); if (done) done(); return; }
+  fx.to(el, { opacity: 0, y: -4, duration: 0.15, ease: 'power1.in', onComplete: () => { el.remove(); if (done) done(); } });
+}
+fxIn(document.querySelector('.login-box'), { y: 14, duration: 0.4 }); // tela de login entra suave
 
 let selfId = null;
 let username = null;
@@ -223,6 +234,11 @@ function enterApp(res) {
   (res.allUsers || []).forEach((n) => allNames.add(n));
   $('login-screen').classList.add('hidden');
   $('main-screen').classList.remove('hidden');
+  // Entrada no app: rail de servidores entra em cascata curta, conteúdo com fade
+  if (fx) {
+    fx.from('#server-rail .rail-icon', { opacity: 0, y: 10, scale: 0.85, duration: 0.3, ease: 'power2.out', stagger: 0.05, clearProps: 'all' });
+    fx.from('.content, .members, .sidebar', { opacity: 0, duration: 0.25, ease: 'power1.out', clearProps: 'opacity' });
+  }
   $('self-name').textContent = username;
   $('self-avatar').replaceChildren(avatarEl(username, 28));
   applyServerView(res); // canal, mensagens, membros, voz e transmissões do servidor atual
@@ -300,7 +316,7 @@ function renderServerRail(servers, active) {
     } else {
       el.textContent = serverInitials(s.name);
     }
-    el.onclick = () => switchToServer(s.id);
+    el.onclick = () => { if (s.id !== currentServerId) fxTap(el); switchToServer(s.id); };
     el.onmouseenter = () => showServerTip(s.id, el); // quem está em chamada, ao passar o mouse
     el.onmouseleave = scheduleServerTipHide;
     rail.appendChild(el);
@@ -321,7 +337,9 @@ function showServerTip(serverId, el) {
     tip.style.left = (r.right + 10) + 'px';
     tip.style.top = Math.min(r.top, window.innerHeight - 260) + 'px';
     renderServerTip(res);
+    const wasHidden = tip.classList.contains('hidden');
     tip.classList.remove('hidden');
+    if (wasHidden) fxIn(tip, { y: 0, x: -6, duration: 0.18 }); // deslizar entre ícones não re-anima
   });
 }
 function scheduleServerTipHide() {
@@ -566,6 +584,7 @@ function systemMessage(text) {
   div.className = 'message system';
   div.textContent = text;
   $('messages').appendChild(div);
+  fxIn(div, { duration: 0.2 }); // avisos são sempre eventos ao vivo — pode animar
   if (stick) { scrollMessages(); trimMessages(); }
 }
 
@@ -721,7 +740,7 @@ socket.on('user-joined', ({ id, username: name, avatar }) => {
 });
 
 socket.on('user-left', ({ id, username: name }) => {
-  document.getElementById('user-' + id)?.remove();
+  fxOut(document.getElementById('user-' + id));
   // NÃO derruba voz/peer/live aqui: trocar de servidor (só a vista) também emite user-left,
   // e a pessoa continua na call. Saída real da voz chega via 'voice-user-left'.
   onlineNames.delete(name);
@@ -809,7 +828,7 @@ function setVoiceDeafened(id, deafened) {
 socket.on('user-deafened', ({ id, deafened } = {}) => setVoiceDeafened(id, deafened));
 
 function removeVoiceUser(id) {
-  document.getElementById('voice-user-' + id)?.remove();
+  fxOut(document.getElementById('voice-user-' + id));
   removeScreenTile(id);
 }
 
@@ -1034,6 +1053,7 @@ function setMuted(muted, sound = true) {
 
 function toggleMute() {
   if (!localStream) return;
+  fxTap($('mute-btn'));
   // Clicar no mic estando silenciado = quero falar: sai do deafen com o mic aberto
   if (deafened) { mutedBeforeDeafen = false; toggleDeafen(); return; }
   setMuted(!manualMuted);
@@ -1042,6 +1062,7 @@ function toggleMute() {
 // Silenciar o canal: para de ouvir todo mundo e também fecha o próprio microfone
 function toggleDeafen() {
   if (!inVoice) return;
+  fxTap($('deafen-btn'));
   deafened = !deafened;
   document.querySelectorAll('audio[id^="audio-"]').forEach((a) => { a.muted = deafened; });
   // Silenciado também cala o áudio das lives dos outros (mas nunca a própria tela)
@@ -1529,6 +1550,7 @@ function showPreview(id, badge) {
   pop.style.top = Math.min(r.top, window.innerHeight - 240) + 'px';
   updatePreview();
   pop.classList.remove('hidden');
+  fxIn(pop, { y: 0, x: -6, scale: 0.98, duration: 0.18 });
 }
 
 function schedulePreviewHide() {
@@ -1863,6 +1885,5 @@ function addScreenTile(id, stream, muted = false) {
 }
 
 function removeScreenTile(id) {
-  document.getElementById('screen-' + id)?.remove();
-  updateLiveMode();
+  fxOut(document.getElementById('screen-' + id), updateLiveMode);
 }
