@@ -256,7 +256,7 @@ function serverName(id) {
 // Ícone de cada servidor (arquivos em public/icons/). Sem o arquivo, cai nas iniciais.
 // HX usa o próprio ícone do app; os outros, as fotos escolhidas.
 const SERVER_PHOTOS = {
-  hx: 'icons/icon-512.png',
+  hx: 'icons/icon-512.png', // logo pixel art (mesmo ícone do app)
   panteras: 'icons/as-panteras-1.jpeg',
   serverb: 'icons/ladyclub.jpg',
 };
@@ -1174,17 +1174,20 @@ function pollSpeaking() {
     const offL = selfVad ? gateOn * 0.7 : SPEAK_OFF;
 
     if (level > onL) m.lastLoud = now;
-    const speaking = m.speaking
+    let speaking = m.speaking
       ? (level > offL || now - (m.lastLoud || 0) < SPEAK_HOLD_MS)
       : level > onL;
+
+    // Gate do VAD: usa a detecção crua (fala), mas só abre se eu não estiver mutado/silenciado
+    if (id === selfId && vadEnabled && !pttOn) { vadOpen = speaking && !manualMuted && !deafened; applyMic(); }
+
+    // Contorno verde só quando o mic REALMENTE transmite: mutado/silenciado/PTT-solto/gate-fechado = sem verde
+    if (id === selfId && !micShouldBeOpen()) speaking = false;
 
     if (speaking !== m.speaking) {
       m.speaking = speaking;
       voiceAvatar(id)?.classList.toggle('speaking', speaking);
     }
-
-    // Gate do microfone: com VAD ligado, o mic só transmite enquanto estou "falando" (verde aceso)
-    if (id === selfId && vadEnabled && !pttOn) { vadOpen = m.speaking; applyMic(); }
   });
 }
 

@@ -170,7 +170,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 
 /* Prévia de transmissão */
 /* Tooltip de quem está em chamada no servidor (hover no ícone) */
-#server-tip { position: fixed; z-index: 40; min-width: 190px; max-width: 260px; background: #111214; border: 1px solid #2b2d31; border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+#server-tip { position: fixed; z-index: 40; min-width: 190px; max-width: 260px; background: #2b2d31; border: 1px solid #1e1f22; border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
 #server-tip .tip-server { color: #fff; font-weight: 700; font-size: 14px; margin-bottom: 8px; }
 #server-tip .tip-empty { color: #949ba4; font-size: 13px; }
 #server-tip .tip-room { color: #949ba4; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; font-weight: 600; display: flex; align-items: center; gap: 5px; margin: 8px 0 4px; }
@@ -223,7 +223,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 
 .profile-header { display: flex; align-items: center; gap: 16px; padding: 24px; background: #232428; border-radius: 10px 10px 0 0; }
 #profile-avatar-holder { position: relative; cursor: pointer; border-radius: 50%; flex-shrink: 0; }
-#profile-avatar-holder .avatar { cursor: pointer; display: block; }
+/* flex (não block): centraliza a inicial/foto no círculo do perfil */
+#profile-avatar-holder .avatar { cursor: pointer; display: flex; }
 .avatar-overlay { position: absolute; inset: 0; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; pointer-events: none; }
 #profile-avatar-holder:hover .avatar-overlay { opacity: 1; }
 .profile-id { min-width: 0; }
