@@ -131,6 +131,9 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .tile-viewers .avatar:first-child { margin-left: 0; }
 .screen-tile .controls { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
 .screen-tile:hover .controls { opacity: 1; }
+/* Saúde da live (fps/bitrate/perda) — visível no hover, junto com os controles */
+.screen-tile .health { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,.7); color: #b5bac1; font-size: 11px; padding: 3px 8px; border-radius: 4px; opacity: 0; transition: opacity .15s; }
+.screen-tile:hover .health:not(:empty) { opacity: 1; }
 .screen-tile .controls button { border: none; border-radius: 4px; background: rgba(0,0,0,.7); color: #dbdee1; cursor: pointer; padding: 4px 6px; }
 .screen-tile .controls button:hover { background: rgba(0,0,0,.9); color: #fff; }
 .screen-tile .controls .icon { width: 15px; height: 15px; }

@@ -1442,7 +1442,8 @@ async function sfuPublish() {
     const v = screenStream.getVideoTracks()[0];
     const a = screenStream.getAudioTracks()[0];
     sfuProducers.push(await sfuSend.produce({ track: v, encodings: [{ maxBitrate: q.bitrate }] }));
-    if (a) sfuProducers.push(await sfuSend.produce({ track: a }));
+    // Áudio da live em estéreo (jogo/música) com DTX (silêncio não gasta banda)
+    if (a) sfuProducers.push(await sfuSend.produce({ track: a, codecOptions: { opusStereo: true, opusDtx: true } }));
     sfuLive = true; // watch-request P2P vira no-op: o servidor é quem distribui
   } catch (err) { console.warn('[sfu] publicar falhou — P2P assume:', err); }
 }
@@ -1498,18 +1499,34 @@ const LIVE_PRESETS = {
   media: { w: 1280, h: 720,  fps: 30, bitrate: 4_000_000, floor: 1_500_000 },
   baixa: { w: 854,  h: 480,  fps: 30, bitrate: 1_500_000, floor: 800_000 },
 };
-function livePreset() { return LIVE_PRESETS[localStorage.getItem('hx-live-quality')] || LIVE_PRESETS.alta; }
-
-if (!LIVE_PRESETS[localStorage.getItem('hx-live-quality')]) localStorage.removeItem('hx-live-quality'); // chave antiga
-$('live-quality').value = localStorage.getItem('hx-live-quality') || 'alta';
-$('live-quality').onchange = () => {
-  localStorage.setItem('hx-live-quality', $('live-quality').value);
-  if (!screenStream) return; // sem live: vale a partir da próxima transmissão
-  const q = livePreset();    // ao vivo: aplica na hora (resolução/fps no track, bitrate nos senders)
+// Modo auto: começa no topo (alta) e desce a escada sob pressão de CPU/rede, subindo de volta na folga
+const AUTO_LADDER = ['alta', 'media', 'baixa'];
+let autoLevel = 0;
+function liveQualityMode() {
+  const sel = localStorage.getItem('hx-live-quality');
+  return (sel === 'auto' || LIVE_PRESETS[sel]) ? sel : 'auto';
+}
+function livePreset() {
+  const sel = liveQualityMode();
+  return sel === 'auto' ? LIVE_PRESETS[AUTO_LADDER[autoLevel]] : (LIVE_PRESETS[sel] || LIVE_PRESETS.alta);
+}
+function applyLivePreset() { // aplica o preset vigente na live aberta (resolução/fps no track, bitrate nos senders)
+  if (!screenStream) return;
+  const q = livePreset();
   screenStream.getVideoTracks()[0]
     ?.applyConstraints({ width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps } })
     .catch(() => {});
   retuneSenders();
+}
+
+if (!LIVE_PRESETS[localStorage.getItem('hx-live-quality')] && localStorage.getItem('hx-live-quality') !== 'auto') {
+  localStorage.removeItem('hx-live-quality'); // chave antiga/inválida
+}
+$('live-quality').value = localStorage.getItem('hx-live-quality') || 'auto';
+$('live-quality').onchange = () => {
+  localStorage.setItem('hx-live-quality', $('live-quality').value);
+  autoLevel = 0; // troca de modo recomeça do topo
+  applyLivePreset();
 };
 
 async function toggleScreen() {
@@ -1531,6 +1548,9 @@ async function toggleScreen() {
   finally { screenPending = false; }
   if (!inVoice || screenStream) { stream.getTracks().forEach((t) => t.stop()); return; } // saiu da voz durante o seletor
   screenStream = stream;
+  // Dica ao encoder: conteúdo de movimento (jogo) — prioriza fluidez sobre nitidez de texto parado
+  const vt = stream.getVideoTracks()[0];
+  if (vt && 'contentHint' in vt) vt.contentHint = 'motion';
   const track = screenStream.getVideoTracks()[0];
   track.contentHint = 'motion'; // prioriza fluidez (jogos); encoder mantém frame rate
   track.onended = () => stopScreen(true, 'captura encerrada pelo navegador ou sistema'); // barra "parar compartilhamento", janela fechada
@@ -1543,12 +1563,17 @@ async function toggleScreen() {
   renderNetStatus();
   thumbTimer = setInterval(sendThumb, 3000);
   setTimeout(sendThumb, 600); // primeira prévia rápida
+  limitedStreak = fineStreak = 0; lastOutStats = null;
+  liveStatsTimer = setInterval(pollLiveStats, 4000); // saúde + modo auto
 }
 
 function stopScreen(sound = true, reason = 'não especificado') {
   if (!screenStream) return;
   clearInterval(thumbTimer);
   thumbTimer = null;
+  clearInterval(liveStatsTimer);
+  liveStatsTimer = null;
+  autoLevel = 0; // próxima live recomeça do topo
   sfuStopPublish();
   peers.forEach(removeScreenSenders);
   viewerSenders.clear();
@@ -1561,6 +1586,77 @@ function stopScreen(sound = true, reason = 'não especificado') {
   $('screen-btn').classList.remove('active');
   if (sound) playSound('screenOff');
 }
+
+// ---------- Saúde da live + modo auto ----------
+// Transmissor: lê as stats do encoder a cada 4s. Alimenta o chip de saúde do próprio tile e,
+// no modo auto, desce a qualidade sob pressão sustentada de CPU/rede (e sobe de volta na folga).
+let liveStatsTimer = null;
+let limitedStreak = 0, fineStreak = 0, lastOutStats = null;
+
+async function pollLiveStats() {
+  const sender = sfuLive ? sfuProducers.find((p) => p.kind === 'video') : [...viewerSenders.values()].find(Boolean);
+  if (!sender || !screenStream) return;
+  let report;
+  try { report = await sender.getStats(); } catch { return; }
+  let out = null;
+  report.forEach((s) => { if (s.type === 'outbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) out = s; });
+  if (!out) return;
+  let mbps = 0;
+  if (lastOutStats && out.timestamp > lastOutStats.ts) {
+    mbps = ((out.bytesSent || 0) - lastOutStats.bytes) * 8 / ((out.timestamp - lastOutStats.ts) / 1000) / 1e6;
+  }
+  lastOutStats = { ts: out.timestamp, bytes: out.bytesSent || 0 };
+  const reason = out.qualityLimitationReason || 'none';
+  const fps = Math.round(out.framesPerSecond || 0);
+  const tile = document.getElementById('screen-' + selfId);
+  const chip = tile?.querySelector('.health');
+  if (chip) {
+    const v = tile.querySelector('video');
+    chip.textContent = `${v?.videoHeight || '?'}p ${fps}fps · ${mbps.toFixed(1)} Mbps`
+      + (reason !== 'none' ? ` · limitado: ${reason === 'cpu' ? 'CPU' : 'rede'}` : '')
+      + (liveQualityMode() === 'auto' ? ` · auto (${AUTO_LADDER[autoLevel]})` : '');
+  }
+  if (liveQualityMode() !== 'auto') return;
+  if (reason === 'cpu' || reason === 'bandwidth') { limitedStreak++; fineStreak = 0; } else { fineStreak++; limitedStreak = 0; }
+  if (limitedStreak >= 2 && autoLevel < AUTO_LADDER.length - 1) {
+    autoLevel++; limitedStreak = 0; applyLivePreset(); // ~8s de aperto: desce um degrau
+  } else if (fineStreak >= 8 && autoLevel > 0) {
+    autoLevel--; fineStreak = 0; applyLivePreset(); // ~32s de folga: sobe de volta
+  }
+}
+
+// Espectador: fps/bitrate/perda de cada live assistida (chip aparece no hover do tile)
+async function pollViewerStats() {
+  for (const tile of document.querySelectorAll('.screen-tile')) {
+    const id = tile.id.slice('screen-'.length);
+    if (id === selfId) continue;
+    let report = null;
+    try {
+      const consumer = sfuConsumers.get(id)?.find((c) => c.kind === 'video');
+      report = consumer ? await consumer.getStats() : await peers.get(id)?.pc.getStats();
+    } catch { continue; }
+    if (!report) continue;
+    let inb = null;
+    report.forEach((s) => { if (s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) inb = s; });
+    if (!inb) continue;
+    const prev = tile._inStats;
+    let mbps = 0, lossPct = 0;
+    if (prev && inb.timestamp > prev.ts) {
+      mbps = ((inb.bytesReceived || 0) - prev.bytes) * 8 / ((inb.timestamp - prev.ts) / 1000) / 1e6;
+      const dPkts = (inb.packetsReceived || 0) - prev.pkts;
+      const dLost = Math.max(0, (inb.packetsLost || 0) - prev.lost);
+      lossPct = dPkts + dLost > 0 ? (dLost / (dPkts + dLost)) * 100 : 0;
+    }
+    tile._inStats = { ts: inb.timestamp, bytes: inb.bytesReceived || 0, pkts: inb.packetsReceived || 0, lost: inb.packetsLost || 0 };
+    const chip = tile.querySelector('.health');
+    if (chip && prev) {
+      const v = tile.querySelector('video');
+      chip.textContent = `${v?.videoHeight || '?'}p ${Math.round(inb.framesPerSecond || 0)}fps · ${mbps.toFixed(1)} Mbps`
+        + (lossPct >= 1 ? ` · perda ${lossPct.toFixed(0)}%` : '');
+    }
+  }
+}
+setInterval(pollViewerStats, 3000);
 
 function sendThumb() {
   const video = document.getElementById('screen-' + selfId)?.querySelector('video');
@@ -2080,7 +2176,10 @@ function addScreenTile(id, stream, muted = false) {
     controls.append(minBtn);
   }
 
-  tile.append(video, label, controls);
+  const health = document.createElement('div');
+  health.className = 'health';
+  health.title = 'Saúde da transmissão';
+  tile.append(video, label, controls, health);
   // A própria live fica sempre no FIM do feed: live nova dos outros entra acima dela,
   // visível de cara (antes nascia "lá embaixo", escondida atrás da sua)
   const own = document.getElementById('screen-' + selfId);

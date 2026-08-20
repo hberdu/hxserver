@@ -823,6 +823,10 @@ io.on('connection', (socket) => {
         enableUdp: true, enableTcp: true, preferUdp: true,
         initialAvailableOutgoingBitrate: 10_000_000,
       });
+      // TCP como caminho de mídia = UDP bloqueado em algum lugar → latência/engasgo garantidos
+      t.on('iceselectedtuplechange', (tuple) => {
+        if (tuple.protocol === 'tcp') console.warn(`[sfu] ${username || socket.id}: mídia via TCP — UDP 40000-40100 bloqueado no caminho (lag provável)`);
+      });
       const dir = payload && payload.dir === 'send' ? 'send' : 'recv';
       const entry = sfu.transports.get(socket.id) || {};
       try { entry[dir]?.close(); } catch { /* já fechado */ }
