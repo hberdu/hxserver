@@ -181,8 +181,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #server-tip .tip-ind .icon { width: 14px; height: 14px; }
 
 /* Botão "instalar aplicativo" no fim da lista de membros (só aparece na versão web) */
-#install-side { margin: 14px 4px 4px; padding: 9px 12px; width: calc(100% - 8px); border: none; border-radius: 6px; background: #5865f2; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; animation: install-pop .35s ease, install-pulse 2.4s ease 1.2s infinite; }
-#install-side:hover { background: #4752c4; animation-play-state: paused, paused; }
+#install-side { margin: 14px 4px 4px; padding: 9px 12px; width: calc(100% - 8px); border: none; border-radius: 6px; background: #383a40; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; animation: install-pop .35s ease, install-pulse 2.4s ease 1.2s infinite; }
+#install-side:hover { background: #43454b; animation-play-state: paused, paused; }
 @keyframes install-pop { from { opacity: 0; transform: translateY(10px); } }
 @keyframes install-pulse { 50% { transform: scale(1.05); } }
 

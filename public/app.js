@@ -67,15 +67,20 @@ window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   installPrompt = e;
   $('install-btn').classList.remove('hidden');
+  $('install-side').classList.remove('hidden'); // só aparece quando o prompt nativo existe
 });
-$('install-btn').onclick = async () => {
-  if (!installPrompt) return;
+// Abre o prompt nativo de instalação; esconde os botões (voltam se o navegador re-oferecer)
+async function consumeInstallPrompt() {
+  if (!installPrompt) return false;
   const p = installPrompt;
   installPrompt = null; // anula antes do await: duplo clique não chama prompt() duas vezes
   $('install-btn').classList.add('hidden');
+  $('install-side').classList.add('hidden');
   p.prompt();
   await p.userChoice.catch(() => {});
-};
+  return true;
+}
+$('install-btn').onclick = consumeInstallPrompt;
 
 // Sugere instalar como app na PRIMEIRA vez que o usuário entra (uma vez por dispositivo)
 function maybeSuggestInstall() {
@@ -88,32 +93,14 @@ function maybeSuggestInstall() {
 }
 $('install-yes').onclick = async () => {
   $('install-overlay').classList.add('hidden');
-  if (installPrompt) {
-    const p = installPrompt;
-    installPrompt = null;
-    $('install-btn').classList.add('hidden');
-    p.prompt();
-    await p.userChoice.catch(() => {});
-  } else {
+  if (!(await consumeInstallPrompt())) {
     systemMessage('Para instalar: menu do navegador → "Instalar aplicativo" (ou ícone na barra de endereço).');
   }
 };
 $('install-no').onclick = () => $('install-overlay').classList.add('hidden');
 
-// Botão fixo no fim da lista de membros: só na versão web (some no app instalado)
-const isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone;
-if (!isStandalone) $('install-side').classList.remove('hidden');
-$('install-side').onclick = async () => {
-  if (installPrompt) {
-    const p = installPrompt;
-    installPrompt = null;
-    $('install-btn').classList.add('hidden');
-    p.prompt();
-    await p.userChoice.catch(() => {});
-  } else {
-    systemMessage('Para instalar: menu do navegador → "Instalar aplicativo" (ou ícone na barra de endereço).');
-  }
-};
+// Botão fixo no fim da lista de membros: clique abre o prompt nativo direto
+$('install-side').onclick = consumeInstallPrompt;
 window.addEventListener('appinstalled', () => $('install-side').classList.add('hidden'));
 
 // ---------- Avatares (foto do perfil, ou inicial com cor determinística) ----------
