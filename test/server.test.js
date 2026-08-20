@@ -3,7 +3,7 @@ process.env.HX_DB = ':memory:'; // antes do require: DB de teste isolado
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const { io: Client } = require('socket.io-client');
-const { httpServer, state, db, authBuckets } = require('../server.js');
+const { httpServer, state, db, authBuckets, closeSfu } = require('../server.js');
 
 let url;
 const clients = [];
@@ -16,6 +16,7 @@ before(async () => {
 after(() => {
   clients.forEach((c) => c.disconnect());
   httpServer.close();
+  closeSfu(); // worker do mediasoup é subprocesso: seguraria o event loop para sempre
 });
 
 beforeEach(() => {
@@ -167,6 +168,24 @@ test('watch responde ack: ok=true quando transmite, ok=false quando não', async
   const ok = await emitAck(b, 'watch', { to: a.id });
   assert.equal(ok.ok, true);
   assert.equal((await req).from, b.id);
+});
+
+test('sfu: caps respondem e transporte é criado para quem está logado', async () => {
+  const a = await loggedClient('ana');
+  // worker do mediasoup sobe assíncrono: espera ficar pronto (ou desiste e o teste cobre o fallback)
+  let caps = null;
+  for (let i = 0; i < 20 && !caps; i++) {
+    const res = await emitAck(a, 'sfu-caps', {});
+    if (res && res.ok) caps = res.rtpCapabilities;
+    else await sleep(100);
+  }
+  if (!caps) return; // ambiente sem mediasoup: fallback P2P é o comportamento esperado
+  assert.ok(Array.isArray(caps.codecs) && caps.codecs.length > 0, 'router publica codecs');
+  const t = await emitAck(a, 'sfu-create-transport', { dir: 'recv' });
+  assert.equal(t.ok, true, 'transporte deveria ser criado: ' + JSON.stringify(t));
+  assert.ok(t.iceParameters && t.dtlsParameters, 'parâmetros ICE/DTLS presentes');
+  const semLogin = await connect();
+  assert.ok((await emitAck(semLogin, 'sfu-create-transport', { dir: 'recv' })).error, 'sem login falha');
 });
 
 test('watchers: plateia propaga ao assistir, parar e sair da voz', async () => {

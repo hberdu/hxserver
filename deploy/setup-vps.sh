@@ -66,9 +66,10 @@ $DOMAIN {
 EOF
 systemctl reload caddy || systemctl restart caddy
 
-# Firewall: só se o ufw estiver ativo
+# Firewall: só se o ufw estiver ativo (40000-40100 = mídia do SFU/mediasoup)
 if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then
   ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
+  ufw allow 40000:40100/udp >/dev/null; ufw allow 40000:40100/tcp >/dev/null
 fi
 
 echo "== Verificação =="

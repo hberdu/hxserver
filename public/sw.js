@@ -1,7 +1,7 @@
 // Service worker: código vai à rede primeiro (deploy chega na hora); cache cobre o offline.
 // Estáticos raros (ícones/manifest) ficam em stale-while-revalidate.
-const CACHE = 'hx-v15'; // v15: ícones novos (marca HX do modal no lugar do pixel art)
-const ASSETS = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/socket.io/socket.io.js', '/vendor/gsap.min.js', '/icons/icon-192.png', '/icons/icon-512.png'];
+const CACHE = 'hx-v16'; // v16: SFU (mediasoup-client no vendor)
+const ASSETS = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/socket.io/socket.io.js', '/vendor/gsap.min.js', '/vendor/mediasoup-client.min.js', '/icons/icon-192.png', '/icons/icon-512.png'];
 const NETWORK_FIRST = ['/', '/index.html', '/app.js', '/style.css', '/socket.io/socket.io.js'];
 
 self.addEventListener('install', (e) => {

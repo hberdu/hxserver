@@ -251,6 +251,40 @@ const state = {
 };
 for (const s of SERVERS) state.messages[s.id] = historyFor.all(s.id);
 
+// ---------- SFU (mediasoup): o servidor distribui as lives ----------
+// Transmissor sobe UMA cópia da tela para cá; o servidor replica para os espectadores (repasse de
+// pacotes, sem transcodificar — CPU baixa). Sem mediasoup ou worker morto: lives caem para o P2P.
+let sfu = null; // { router, announced, transports: Map<socketId,{send,recv}>, producers: Map<sharerId,[Producer]> }
+(async () => {
+  try {
+    const mediasoup = require('mediasoup');
+    const worker = await mediasoup.createWorker({ rtcMinPort: 40000, rtcMaxPort: 40100 });
+    worker.on('died', () => { console.error('[sfu] worker morreu — lives caem para P2P'); sfu = null; });
+    const router = await worker.createRouter({ mediaCodecs: [
+      { kind: 'audio', mimeType: 'audio/opus', clockRate: 48000, channels: 2 },
+      { kind: 'video', mimeType: 'video/H264', clockRate: 90000, parameters: { 'packetization-mode': 1, 'profile-level-id': '42e01f', 'level-asymmetry-allowed': 1 } },
+      { kind: 'video', mimeType: 'video/VP8', clockRate: 90000 },
+    ] });
+    // IP anunciado nos candidates: env ou o primeiro IPv4 não-interno (na VPS é o IP público)
+    const os = require('os');
+    const announced = process.env.HX_ANNOUNCED_IP ||
+      Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal)?.address;
+    sfu = { worker, router, announced, transports: new Map(), producers: new Map() };
+    console.log(`[sfu] mediasoup pronto — portas UDP/TCP 40000-40100, IP anunciado: ${announced || 'nenhum'}`);
+  } catch (err) {
+    console.error('[sfu] indisponível — lives seguem P2P:', err.message);
+  }
+})();
+
+function sfuCleanup(id) {
+  if (!sfu) return;
+  sfu.producers.get(id)?.forEach((p) => { try { p.close(); } catch { /* já fechado */ } });
+  sfu.producers.delete(id);
+  const t = sfu.transports.get(id);
+  try { t?.send?.close(); t?.recv?.close(); } catch { /* já fechado */ }
+  sfu.transports.delete(id);
+}
+
 // Peers da MESMA sala (o mesh WebRTC se forma só dentro de cada sala)
 function voicePeers(room, exceptId) {
   const out = [];
@@ -343,6 +377,7 @@ const RATE_COST = {
   'set-muted': 1, 'set-deafened': 1, 'screen-share': 1,
   logout: 1, 'get-profile': 1, 'ping-hx': 0.5, // ping legítimo é 1 a cada 5s: folga enorme
   'switch-server': 2, 'voice-roster': 0.5,
+  'sfu-caps': 1, 'sfu-create-transport': 2, 'sfu-connect': 2, 'sfu-produce': 2, 'sfu-consume': 2,
 };
 const RATE_MAX = 60;
 const RATE_REFILL = 6; // tokens por segundo
@@ -407,8 +442,9 @@ io.on('connection', (socket) => {
       if (state.watchers.delete(id)) io.to(voiceSv).emit('watchers', { id, names: [] });
       io.to(voiceSv).emit('screen-share', { id, username: name, on: false });
     }
-    // Conexão antiga também some das plateias em que estava
+    // Conexão antiga também some das plateias em que estava, e libera o que tinha no SFU
     state.watchers.forEach((set, sid) => { if (set.delete(id)) emitWatchers(sid); });
+    sfuCleanup(id);
     if (state.voice.delete(id)) {
       console.log(`[voz] saiu: ${name} — motivo: sessão substituída por nova conexão da mesma conta`);
       io.to(voiceSv).emit('voice-user-left', { id });
@@ -689,6 +725,9 @@ io.on('connection', (socket) => {
       const dur = Math.round((Date.now() - (shareStart.get(socket.id) || Date.now())) / 1000);
       shareStart.delete(socket.id);
       console.log(`[share] fim: ${username} após ${dur}s — motivo: ${reason}`);
+      // Producers do SFU morrem com a live (transportes ficam: podem ser reusados na próxima)
+      sfu?.producers.get(socket.id)?.forEach((p) => { try { p.close(); } catch { /* já fechado */ } });
+      sfu?.producers.delete(socket.id);
       if (state.watchers.delete(socket.id)) dest.emit('watchers', { id: socket.id, names: [] });
       dest.emit('screen-share', { id: socket.id, username, on: false });
     }
@@ -769,9 +808,82 @@ io.on('connection', (socket) => {
     if (state.watchers.get(to)?.delete(socket.id)) emitWatchers(to);
   });
 
+  // ---------- Sinalização SFU (transmissor publica; espectador consome) ----------
+  on('sfu-caps', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    ack(sfu ? { ok: true, rtpCapabilities: sfu.router.rtpCapabilities } : { ok: false });
+  });
+
+  on('sfu-create-transport', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!sfu || !loggedIn()) return ack({ error: 'SFU indisponível.' });
+    try {
+      const t = await sfu.router.createWebRtcTransport({
+        listenIps: [{ ip: '0.0.0.0', announcedIp: sfu.announced }],
+        enableUdp: true, enableTcp: true, preferUdp: true,
+        initialAvailableOutgoingBitrate: 10_000_000,
+      });
+      const dir = payload && payload.dir === 'send' ? 'send' : 'recv';
+      const entry = sfu.transports.get(socket.id) || {};
+      try { entry[dir]?.close(); } catch { /* já fechado */ }
+      entry[dir] = t;
+      sfu.transports.set(socket.id, entry);
+      ack({ ok: true, id: t.id, iceParameters: t.iceParameters, iceCandidates: t.iceCandidates, dtlsParameters: t.dtlsParameters });
+    } catch (err) {
+      console.error('[sfu] create-transport:', err.message);
+      ack({ error: 'Falha ao criar transporte.' });
+    }
+  });
+
+  on('sfu-connect', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    const { dir, dtlsParameters } = payload || {};
+    const t = sfu && sfu.transports.get(socket.id)?.[dir === 'send' ? 'send' : 'recv'];
+    if (!t || !dtlsParameters) return ack({ error: 'Transporte não existe.' });
+    try { await t.connect({ dtlsParameters }); ack({ ok: true }); }
+    catch { ack({ error: 'Falha no connect.' }); }
+  });
+
+  on('sfu-produce', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    const { kind, rtpParameters } = payload || {};
+    const t = sfu && sfu.transports.get(socket.id)?.send;
+    // Só quem está transmitindo (screen-share on) publica; teto de 2 producers (vídeo + áudio)
+    if (!t || !state.sharing.has(socket.id)) return ack({ error: 'Sem transmissão ativa.' });
+    if ((sfu.producers.get(socket.id) || []).length >= 2) return ack({ error: 'Limite de mídia.' });
+    try {
+      const producer = await t.produce({ kind, rtpParameters });
+      if (!sfu.producers.has(socket.id)) sfu.producers.set(socket.id, []);
+      sfu.producers.get(socket.id).push(producer);
+      ack({ ok: true, id: producer.id });
+    } catch { ack({ error: 'Falha ao publicar.' }); }
+  });
+
+  on('sfu-consume', async (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    const { sharer, rtpCapabilities } = payload || {};
+    const t = sfu && sfu.transports.get(socket.id)?.recv;
+    const producers = sfu && typeof sharer === 'string' ? sfu.producers.get(sharer) : null;
+    // Mesma regra do watch P2P: só assiste quem está na mesma sala de voz do transmissor
+    const room = state.voice.get(socket.id);
+    if (!t || !producers || !producers.length || !rtpCapabilities) return ack({ error: 'Live não está no SFU.' });
+    if (!room || state.voice.get(sharer) !== room) return ack({ error: 'Só assiste quem está na mesma sala.' });
+    try {
+      const consumers = [];
+      for (const p of producers) {
+        if (!sfu.router.canConsume({ producerId: p.id, rtpCapabilities })) continue;
+        const c = await t.consume({ producerId: p.id, rtpCapabilities, paused: false });
+        consumers.push({ id: c.id, producerId: p.id, kind: c.kind, rtpParameters: c.rtpParameters });
+      }
+      if (!consumers.length) return ack({ error: 'Codecs incompatíveis.' });
+      ack({ ok: true, consumers });
+    } catch { ack({ error: 'Falha ao consumir.' }); }
+  });
+
   // socket.io entrega o motivo do disconnect: 'transport close' (rede/aba fechada),
   // 'ping timeout' (cliente sumiu sem avisar), 'server namespace disconnect' (derrubado) etc.
   on('disconnect', (reason) => {
+    sfuCleanup(socket.id);
     if (!loggedIn()) return;
     leaveVoice('desconectou: ' + reason);
     // delete pode já ter acontecido via dropStale: só notifica se éramos nós que removemos
@@ -815,4 +927,5 @@ if (require.main === module) {
   }
 }
 
-module.exports = { httpServer, io, state, db, authBuckets, connCount };
+// closeSfu: o worker do mediasoup é subprocesso — sem fechar, os testes nunca terminam
+module.exports = { httpServer, io, state, db, authBuckets, connCount, closeSfu: () => sfu?.worker.close() };

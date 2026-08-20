@@ -1389,16 +1389,114 @@ socket.on('signal', async ({ from, data }) => {
 let screenPending = false;
 let thumbTimer = null;
 
+// ---------- SFU (mediasoup): live sobe UMA vez pro servidor, que replica aos espectadores ----------
+// Corta o custo no PC do transmissor: 1 encode + 1 upload, independente de quantos assistem.
+// Qualquer falha aqui cai no P2P mesh de sempre (fallback silencioso).
+let sfuDevice = null;   // Device carregado (false = SFU indisponível nesta sessão)
+let sfuSend = null;     // transporte de envio (minha live)
+let sfuRecv = null;     // transporte de recepção (lives que assisto)
+let sfuLive = false;    // minha live está publicada no SFU (gate do fallback P2P)
+let sfuProducers = [];
+const sfuConsumers = new Map(); // sharerId -> [Consumer]
+
+async function sfuInit() {
+  if (sfuDevice !== null) return sfuDevice;
+  if (!window.mediasoupClient) return (sfuDevice = false);
+  const res = await new Promise((r) => socket.emit('sfu-caps', {}, r));
+  if (!res || !res.ok) return (sfuDevice = false);
+  try {
+    const d = new mediasoupClient.Device();
+    await d.load({ routerRtpCapabilities: res.rtpCapabilities });
+    sfuDevice = d;
+  } catch { sfuDevice = false; }
+  return sfuDevice;
+}
+
+async function sfuTransport(dir) {
+  const params = await new Promise((r) => socket.emit('sfu-create-transport', { dir }, r));
+  if (!params || !params.ok) return null;
+  const t = dir === 'send' ? sfuDevice.createSendTransport(params) : sfuDevice.createRecvTransport(params);
+  t.on('connect', ({ dtlsParameters }, cb, errb) => {
+    socket.emit('sfu-connect', { dir, dtlsParameters }, (r) => (r && r.ok ? cb() : errb(new Error('sfu-connect'))));
+  });
+  if (dir === 'send') {
+    t.on('produce', ({ kind, rtpParameters }, cb, errb) => {
+      socket.emit('sfu-produce', { kind, rtpParameters }, (r) => (r && r.ok ? cb({ id: r.id }) : errb(new Error('sfu-produce'))));
+    });
+  }
+  return t;
+}
+
+// Transmissor: publica a tela no SFU (chamado logo após o screen-share on)
+async function sfuPublish() {
+  try {
+    if (!(await sfuInit()) || !screenStream) return;
+    if (!sfuSend || sfuSend.closed) sfuSend = await sfuTransport('send');
+    if (!sfuSend) return;
+    const q = livePreset();
+    const v = screenStream.getVideoTracks()[0];
+    const a = screenStream.getAudioTracks()[0];
+    sfuProducers.push(await sfuSend.produce({ track: v, encodings: [{ maxBitrate: q.bitrate }] }));
+    if (a) sfuProducers.push(await sfuSend.produce({ track: a }));
+    sfuLive = true; // watch-request P2P vira no-op: o servidor é quem distribui
+  } catch (err) { console.warn('[sfu] publicar falhou — P2P assume:', err); }
+}
+
+function sfuStopPublish() {
+  sfuProducers.forEach((p) => { try { p.close(); } catch { /* já fechado */ } });
+  sfuProducers = [];
+  sfuLive = false;
+}
+
+// Espectador: consome a live de `id` do SFU. true = tile criado por aqui.
+async function sfuWatch(id) {
+  try {
+    if (!(await sfuInit())) return false;
+    if (!sfuRecv || sfuRecv.closed) sfuRecv = await sfuTransport('recv');
+    if (!sfuRecv) return false;
+    // Até 3 tentativas: o transmissor pode ainda estar publicando (corrida watch × produce)
+    for (let i = 0; i < 3; i++) {
+      const res = await new Promise((r) => socket.emit('sfu-consume', { sharer: id, rtpCapabilities: sfuDevice.rtpCapabilities }, r));
+      if (res && res.ok && res.consumers.length) {
+        if (!watching.has(id)) return true; // desistiu durante a espera
+        sfuUnwatch(id); // consumers antigos (re-assistir) não vazam
+        const stream = new MediaStream();
+        const list = [];
+        for (const c of res.consumers) {
+          const consumer = await sfuRecv.consume(c);
+          list.push(consumer);
+          stream.addTrack(consumer.track);
+        }
+        sfuConsumers.set(id, list);
+        screenStreams.set(id, stream);
+        addScreenTile(id, stream);
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+  } catch (err) { console.warn('[sfu] assistir falhou — P2P assume:', err); }
+  return false;
+}
+
+function sfuUnwatch(id) {
+  const list = sfuConsumers.get(id);
+  if (!list) return;
+  list.forEach((c) => { try { c.close(); } catch { /* já fechado */ } });
+  sfuConsumers.delete(id);
+  screenStreams.delete(id); // stream do SFU morre com os consumers (re-assistir consome de novo)
+}
+
 // Qualidade da transmissão: quem transmite escolhe o peso no próprio PC (perfil → Transmissão).
 // Fluido corta o custo do encode (resolução/fps/bitrate menores) para jogar sem travar.
 const LIVE_PRESETS = {
-  fluido:      { w: 1280, h: 720,  fps: 30, bitrate: 4_000_000,  floor: 1_500_000 },
-  equilibrado: { w: 1920, h: 1080, fps: 60, bitrate: 8_000_000,  floor: 2_500_000 },
-  nitido:      { w: 2560, h: 1440, fps: 60, bitrate: 12_000_000, floor: 4_000_000 },
+  alta:  { w: 1920, h: 1080, fps: 60, bitrate: 8_000_000, floor: 2_500_000 }, // teto: 1080p60
+  media: { w: 1280, h: 720,  fps: 30, bitrate: 4_000_000, floor: 1_500_000 },
+  baixa: { w: 854,  h: 480,  fps: 30, bitrate: 1_500_000, floor: 800_000 },
 };
-function livePreset() { return LIVE_PRESETS[localStorage.getItem('hx-live-quality')] || LIVE_PRESETS.equilibrado; }
+function livePreset() { return LIVE_PRESETS[localStorage.getItem('hx-live-quality')] || LIVE_PRESETS.alta; }
 
-$('live-quality').value = localStorage.getItem('hx-live-quality') || 'equilibrado';
+if (!LIVE_PRESETS[localStorage.getItem('hx-live-quality')]) localStorage.removeItem('hx-live-quality'); // chave antiga
+$('live-quality').value = localStorage.getItem('hx-live-quality') || 'alta';
 $('live-quality').onchange = () => {
   localStorage.setItem('hx-live-quality', $('live-quality').value);
   if (!screenStream) return; // sem live: vale a partir da próxima transmissão
@@ -1433,6 +1531,7 @@ async function toggleScreen() {
   track.onended = () => stopScreen(true, 'captura encerrada pelo navegador ou sistema'); // barra "parar compartilhamento", janela fechada
   addScreenTile(selfId, screenStream, true);
   socket.emit('screen-share', { on: true });
+  sfuPublish(); // servidor assume a distribuição; se falhar, o watch-request P2P continua servindo
   updateBadge(selfId, true);
   $('screen-btn').classList.add('active');
   playSound('screenOn');
@@ -1445,6 +1544,7 @@ function stopScreen(sound = true, reason = 'não especificado') {
   if (!screenStream) return;
   clearInterval(thumbTimer);
   thumbTimer = null;
+  sfuStopPublish();
   peers.forEach(removeScreenSenders);
   viewerSenders.clear();
   screenStream.getTracks().forEach((t) => t.stop());
@@ -1498,6 +1598,7 @@ function retuneSenders() {
 // Espectador pediu para assistir minha tela
 socket.on('watch-request', ({ from } = {}) => {
   if (!screenStream || typeof from !== 'string') return;
+  if (sfuLive) return; // o SFU distribui: nada de cópia P2P por espectador
   if (viewerSenders.has(from)) return;
   // getPeer (não peers.get): logo após reload do espectador o pc dele pode ainda não existir
   // aqui — descartaria o pedido e ele ficaria em "Parar de assistir" sem vídeo nunca chegar
@@ -1568,6 +1669,7 @@ function sharerGone(id) {
   if (!sharers.delete(id)) return;
   updateBadge(id, false);
   watching.delete(id);
+  sfuUnwatch(id);
   // NÃO apaga screenStreams aqui: o receiver continua válido no pc. Na próxima live o transmissor
   // faz replaceTrack (sem novo ontrack) — sem o cache, o re-assistir esperaria um evento que nunca
   // vem e travava. O cache só morre com o pc (removePeer).
@@ -1838,7 +1940,8 @@ function toggleWatch(id) {
   if (watching.has(id)) {
     socket.emit('unwatch', { to: id });
     watching.delete(id);
-    removeScreenTile(id); // stream fica em cache (screenStreams) para reabrir na hora ao voltar
+    sfuUnwatch(id); // consumers do SFU fecham; no P2P o stream fica em cache para reabrir
+    removeScreenTile(id);
   } else {
     watching.add(id);
     // Sair do modo chat para ver a live que abri
@@ -1851,10 +1954,13 @@ function toggleWatch(id) {
         if (previewId) updatePreview();
         return;
       }
-      // Re-assistir num m-line reaproveitado: o track re-ativa sem novo ontrack — o tile renasce do cache.
-      // Primeira vez: o cache ainda não existe e o tile nasce no ontrack.
-      const cached = screenStreams.get(id);
-      if (cached && !document.getElementById('screen-' + id)) addScreenTile(id, cached);
+      // Preferência: consumir do SFU (1 upload no transmissor). Falhou? P2P de sempre:
+      // re-assistir usa o cache; primeira vez o tile nasce no ontrack.
+      sfuWatch(id).then((viaSfu) => {
+        if (viaSfu) return;
+        const cached = screenStreams.get(id);
+        if (cached && !document.getElementById('screen-' + id)) addScreenTile(id, cached);
+      });
       // Cinto: vídeo não apareceu em 5s = renegociação perdida — desarma o estado (nada de lock
       // eterno em "Parar de assistir") e avisa para tentar de novo
       setTimeout(() => {
