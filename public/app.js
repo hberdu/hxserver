@@ -1865,10 +1865,17 @@ function addScreenTile(id, stream, muted = false) {
       slider.disabled = video.muted;
       if (!video.muted) video.play().catch(() => {});
     };
-    volBtn = tileButton('volume', 'Mudo / Som da live', () => { userMuted = !userMuted; applyMute(); });
+    // Ligar o som do tile estando silenciado = quero ouvir: sai do deafen (como o mic faz ao falar).
+    // toggleDeafen re-sincroniza todos os tiles (inclusive este) e o ícone do headset na lista.
+    volBtn = tileButton('volume', 'Mudo / Som da live', () => {
+      userMuted = !userMuted;
+      if (!userMuted && deafened) { toggleDeafen(); return; }
+      applyMute();
+    });
     slider.oninput = () => {
       video.volume = slider.value / 100;
       if (video.volume > 0) userMuted = false;
+      if (deafened) { toggleDeafen(); return; }
       applyMute();
     };
     applyMute();                 // reflete o estado inicial (mudo se silenciado)
@@ -1878,6 +1885,14 @@ function addScreenTile(id, stream, muted = false) {
     // Maximizar: só live dos outros — a própria não tem por quê (é a sua tela ao vivo)
     controls.append(tileButton('fullscreen', 'Tela cheia', () => video.requestFullscreen?.().catch(() => {})));
     video.ondblclick = () => video.requestFullscreen?.().catch(() => {});
+  } else {
+    // Transmissor: minimiza a própria live (vira faixa fina) pra assistir às lives dos outros
+    const minBtn = tileButton('minus', 'Minimizar sua live', () => {
+      const mini = tile.classList.toggle('mini');
+      minBtn.querySelector('use').setAttribute('href', mini ? '#i-fullscreen' : '#i-minus');
+      minBtn.title = mini ? 'Expandir sua live' : 'Minimizar sua live';
+    });
+    controls.append(minBtn);
   }
 
   tile.append(video, label, controls);

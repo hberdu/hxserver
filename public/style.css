@@ -111,6 +111,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 }
 /* Mesmo tamanho independente da resolução: preenche o tile e escala (contain mantém proporção) */
 .content.live-mode .screen-tile video { width: 100%; height: 100%; object-fit: contain; }
+/* Própria live minimizada: faixa fina sem âncora de snap — as lives dos outros dominam o feed */
+.content.live-mode .screen-tile.mini { height: 110px; scroll-snap-align: none; padding: 6px 18px; }
 /* Barra de scroll cinza estilizada (WebKit), no tom da plataforma */
 .content.live-mode .screens::-webkit-scrollbar { width: 12px; }
 .content.live-mode .screens::-webkit-scrollbar-track { background: transparent; }
