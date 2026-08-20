@@ -1389,16 +1389,36 @@ socket.on('signal', async ({ from, data }) => {
 let screenPending = false;
 let thumbTimer = null;
 
+// Qualidade da transmissão: quem transmite escolhe o peso no próprio PC (perfil → Transmissão).
+// Fluido corta o custo do encode (resolução/fps/bitrate menores) para jogar sem travar.
+const LIVE_PRESETS = {
+  fluido:      { w: 1280, h: 720,  fps: 30, bitrate: 4_000_000,  floor: 1_500_000 },
+  equilibrado: { w: 1920, h: 1080, fps: 60, bitrate: 8_000_000,  floor: 2_500_000 },
+  nitido:      { w: 2560, h: 1440, fps: 60, bitrate: 12_000_000, floor: 4_000_000 },
+};
+function livePreset() { return LIVE_PRESETS[localStorage.getItem('hx-live-quality')] || LIVE_PRESETS.equilibrado; }
+
+$('live-quality').value = localStorage.getItem('hx-live-quality') || 'equilibrado';
+$('live-quality').onchange = () => {
+  localStorage.setItem('hx-live-quality', $('live-quality').value);
+  if (!screenStream) return; // sem live: vale a partir da próxima transmissão
+  const q = livePreset();    // ao vivo: aplica na hora (resolução/fps no track, bitrate nos senders)
+  screenStream.getVideoTracks()[0]
+    ?.applyConstraints({ width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps } })
+    .catch(() => {});
+  retuneSenders();
+};
+
 async function toggleScreen() {
   if (screenPending) return;
   if (screenStream) { stopScreen(true, 'botão parar do app'); return; }
   screenPending = true;
+  const q = livePreset();
   let stream;
   try {
     // Seletor nativo: tela inteira, janela ou aplicativo aberto (mesmo mecanismo do Discord)
-    // 1080p60: nítido e fluido sem afogar encoder/rede (4K travava; WebRTC ainda adapta se faltar banda)
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } },
+      video: { width: { ideal: q.w }, height: { ideal: q.h }, frameRate: { ideal: q.fps, max: q.fps } },
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, // som da aba/jogo, sem processar
       surfaceSwitching: 'include',    // trocar de janela sem parar a live
       selfBrowserSurface: 'exclude',  // evita efeito túnel capturando a própria aba
@@ -1425,10 +1445,7 @@ function stopScreen(sound = true, reason = 'não especificado') {
   if (!screenStream) return;
   clearInterval(thumbTimer);
   thumbTimer = null;
-  peers.forEach((p) => {
-    p.screenSender?.replaceTrack(null).catch(() => {});
-    p.screenAudioSender?.replaceTrack(null).catch(() => {});
-  });
+  peers.forEach(removeScreenSenders);
   viewerSenders.clear();
   screenStream.getTracks().forEach((t) => t.stop());
   screenStream = null;
@@ -1464,9 +1481,10 @@ function preferBestCodec(pc, sender) {
 
 // Bitrate adaptativo: mesh = 1 encode por espectador; divide o orçamento para não travar
 function retuneSenders() {
+  const q = livePreset();
   const n = Math.max(1, viewerSenders.size);
-  const bitrate = Math.max(2_500_000, Math.floor(8_000_000 / n)); // 8 Mbps sozinho, piso de 2.5
-  const fps = n > 1 ? 30 : 60; // 2+ espectadores: 30fps corta o custo de cada encode pela metade
+  const bitrate = Math.max(q.floor, Math.floor(q.bitrate / n)); // divide entre espectadores, com piso
+  const fps = n > 1 ? Math.min(30, q.fps) : q.fps; // 2+ espectadores: 30fps corta o custo de cada encode
   viewerSenders.forEach((sender) => {
     const p = sender.getParameters();
     if (!p.encodings || !p.encodings.length) return;
@@ -1486,26 +1504,28 @@ socket.on('watch-request', ({ from } = {}) => {
   const peer = getPeer(from);
   const vTrack = screenStream.getVideoTracks()[0];
   const aTrack = screenStream.getAudioTracks()[0]; // pode não existir (usuário não marcou "compartilhar áudio")
-  // Vídeo primeiro (ordem importa: define qual m-line é a tela no lado do espectador)
-  if (peer.screenSender) {
-    peer.screenSender.replaceTrack(vTrack).catch(() => {}); // replaceTrack não renegocia (SDP não cresce)
-  } else {
-    peer.screenSender = peer.pc.addTrack(vTrack, screenStream);
-    preferBestCodec(peer.pc, peer.screenSender);
-  }
-  if (aTrack) {
-    if (peer.screenAudioSender) peer.screenAudioSender.replaceTrack(aTrack).catch(() => {});
-    else peer.screenAudioSender = peer.pc.addTrack(aTrack, screenStream);
-  }
+  // addTrack SEMPRE (nada de replaceTrack): cada assistir gera renegociação nova, e o espectador
+  // sempre recebe o vídeo por evento. O replaceTrack silencioso era a raiz do "travado sem vídeo":
+  // se uma renegociação se perdia, nenhum assistir futuro renegociava de novo — lock permanente.
+  removeScreenSenders(peer);
+  peer.screenSender = peer.pc.addTrack(vTrack, screenStream);
+  preferBestCodec(peer.pc, peer.screenSender);
+  if (aTrack) peer.screenAudioSender = peer.pc.addTrack(aTrack, screenStream);
   viewerSenders.set(from, peer.screenSender);
   retuneSenders(); // encodings tardios: onsignalingstatechange re-aplica quando fechar
 });
 
+// Tira os senders de tela de um peer (renegocia sozinho); addTrack seguinte recomeça limpo
+function removeScreenSenders(peer) {
+  try { if (peer.screenSender) peer.pc.removeTrack(peer.screenSender); } catch { /* pc já fechado */ }
+  try { if (peer.screenAudioSender) peer.pc.removeTrack(peer.screenAudioSender); } catch { /* pc já fechado */ }
+  peer.screenSender = peer.screenAudioSender = null;
+}
+
 socket.on('watch-stop', ({ from } = {}) => {
   if (!viewerSenders.delete(from)) return;
   const peer = peers.get(from);
-  peer?.screenSender?.replaceTrack(null).catch(() => {});      // corta vídeo sem renegociação
-  peer?.screenAudioSender?.replaceTrack(null).catch(() => {}); // e o áudio
+  if (peer) removeScreenSenders(peer);
   retuneSenders(); // sobrou banda para os que ficaram
 });
 
@@ -1827,12 +1847,23 @@ function toggleWatch(id) {
       if (!res || !res.ok) { // transmissão acabou de encerrar
         watching.delete(id);
         removeScreenTile(id);
+        systemMessage('Essa transmissão já encerrou.');
+        if (previewId) updatePreview();
         return;
       }
-      // Re-assistir: o transmissor faz replaceTrack (sem novo ontrack), então recrio o tile do cache.
+      // Re-assistir num m-line reaproveitado: o track re-ativa sem novo ontrack — o tile renasce do cache.
       // Primeira vez: o cache ainda não existe e o tile nasce no ontrack.
       const cached = screenStreams.get(id);
       if (cached && !document.getElementById('screen-' + id)) addScreenTile(id, cached);
+      // Cinto: vídeo não apareceu em 5s = renegociação perdida — desarma o estado (nada de lock
+      // eterno em "Parar de assistir") e avisa para tentar de novo
+      setTimeout(() => {
+        if (!watching.has(id) || document.getElementById('screen-' + id)) return;
+        watching.delete(id);
+        socket.emit('unwatch', { to: id });
+        systemMessage('A live de ' + (sharers.get(id)?.username || 'usuário') + ' não respondeu — tente assistir de novo.');
+        if (previewId) updatePreview();
+      }, 5000);
     });
   }
   if (previewId) updatePreview();

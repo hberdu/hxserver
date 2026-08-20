@@ -191,6 +191,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #server-tip .tip-ind { color: #949ba4; display: inline-flex; }
 #server-tip .tip-ind .icon { width: 14px; height: 14px; }
 
+.toggle-row select { background: #1e1f22; color: #dbdee1; border: 1px solid #4e5058; border-radius: 4px; padding: 6px 8px; font-size: 13px; }
+
 /* Sair da conta: mesmo desenho do Remover (btn-danger), largura total e centrado */
 #logout-btn { width: 100%; justify-content: center; margin-top: 16px; }
 
