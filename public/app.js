@@ -700,9 +700,8 @@ socket.on('user-joined', ({ id, username: name, avatar }) => {
 
 socket.on('user-left', ({ id, username: name }) => {
   document.getElementById('user-' + id)?.remove();
-  removeVoiceUser(id);
-  removePeer(id);
-  sharerGone(id);
+  // NÃO derruba voz/peer/live aqui: trocar de servidor (só a vista) também emite user-left,
+  // e a pessoa continua na call. Saída real da voz chega via 'voice-user-left'.
   onlineNames.delete(name);
   clearTyping(name); // "está digitando…" de quem saiu não fica pendurado
   renderOffline();
@@ -1385,13 +1384,14 @@ function sendThumb() {
   socket.emit('screen-thumb', { img: canvas.toDataURL('image/jpeg', 0.5) });
 }
 
-// Codec: VP9 comprime ~30-40% melhor que o VP8 padrão — mais qualidade no mesmo bitrate
+// Codec: H.264 tem encoder de hardware na maioria das GPUs (NVENC/QuickSync/AMF) —
+// o encode sai da CPU do transmissor. VP9/AV1 comprimem melhor mas são encode por software (pesado).
 function preferBestCodec(pc, sender) {
   try {
     const transceiver = pc.getTransceivers().find((t) => t.sender === sender);
     const codecs = RTCRtpSender.getCapabilities('video')?.codecs;
     if (!transceiver || !codecs) return;
-    const rank = (c) => (/VP9/i.test(c.mimeType) ? 0 : /AV1/i.test(c.mimeType) ? 1 : 2);
+    const rank = (c) => (/H264/i.test(c.mimeType) ? 0 : /VP9/i.test(c.mimeType) ? 1 : 2);
     transceiver.setCodecPreferences([...codecs].sort((a, b) => rank(a) - rank(b)));
   } catch { /* navegador sem suporte: fica o codec padrão */ }
 }
@@ -1400,11 +1400,13 @@ function preferBestCodec(pc, sender) {
 function retuneSenders() {
   const n = Math.max(1, viewerSenders.size);
   const bitrate = Math.max(2_500_000, Math.floor(8_000_000 / n)); // 8 Mbps sozinho, piso de 2.5
+  const fps = n > 1 ? 30 : 60; // 2+ espectadores: 30fps corta o custo de cada encode pela metade
   viewerSenders.forEach((sender) => {
     const p = sender.getParameters();
     if (!p.encodings || !p.encodings.length) return;
     p.degradationPreference = 'maintain-framerate';
     p.encodings[0].maxBitrate = bitrate;
+    p.encodings[0].maxFramerate = fps;
     sender.setParameters(p).catch(() => {});
   });
 }
@@ -1830,6 +1832,8 @@ function addScreenTile(id, stream, muted = false) {
   tile.append(video, label, controls);
   $('screens').appendChild(tile);
   updateLiveMode();
+  // Cada tile ocupa 100% da altura: a live nova nasceria fora da vista (abaixo da atual)
+  tile.scrollIntoView({ block: 'center' });
 }
 
 function removeScreenTile(id) {
