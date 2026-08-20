@@ -32,7 +32,9 @@ echo "== App em $APP_DIR =="
 id -u hx &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin hx
 git config --global --add safe.directory "$APP_DIR" || true
 if [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" pull --ff-only
+  # reset --hard: segue o GitHub mesmo após histórico reescrito (hx.db está fora do git, não corre risco)
+  git -C "$APP_DIR" fetch origin
+  git -C "$APP_DIR" reset --hard origin/main
 else
   git clone "$REPO" "$APP_DIR"
 fi
