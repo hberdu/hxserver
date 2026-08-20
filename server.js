@@ -827,6 +827,11 @@ io.on('connection', (socket) => {
       t.on('iceselectedtuplechange', (tuple) => {
         if (tuple.protocol === 'tcp') console.warn(`[sfu] ${username || socket.id}: mídia via TCP — UDP 40000-40100 bloqueado no caminho (lag provável)`);
       });
+      // Transporte que negocia mas nunca conecta = mídia morta (tile preto): denuncia no log
+      t.on('dtlsstatechange', (s) => {
+        if (s === 'connected') console.log(`[sfu] ${username || socket.id}: transporte ${payload && payload.dir} conectado`);
+        else if (s === 'failed' || s === 'closed') console.warn(`[sfu] ${username || socket.id}: transporte ${payload && payload.dir} ${s}`);
+      });
       const dir = payload && payload.dir === 'send' ? 'send' : 'recv';
       const entry = sfu.transports.get(socket.id) || {};
       try { entry[dir]?.close(); } catch { /* já fechado */ }
