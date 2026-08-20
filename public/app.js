@@ -2,6 +2,18 @@
 const socket = io();
 const $ = (id) => document.getElementById(id);
 
+// ---------- Micro-animações (GSAP): curtas e discretas — realce, não espetáculo ----------
+// Respeita "reduzir movimento" do sistema; sem GSAP (cache antigo offline) vira no-op.
+const fx = (window.gsap && !matchMedia('(prefers-reduced-motion: reduce)').matches) ? window.gsap : null;
+// Entrada de item (mensagem, membro, tile): fade + deslize sutil de baixo
+function fxIn(el, opts = {}) {
+  if (fx && el) fx.from(el, { opacity: 0, y: 6, duration: 0.25, ease: 'power2.out', clearProps: 'all', ...opts });
+}
+// Abertura de modal: card cresce de 97% com fade (overlay em si não anima — menos ruído)
+function fxModal(overlay) {
+  if (fx && overlay) fx.from(overlay.firstElementChild, { opacity: 0, scale: 0.97, y: 8, duration: 0.2, ease: 'power2.out', clearProps: 'all' });
+}
+
 let selfId = null;
 let username = null;
 
@@ -28,8 +40,10 @@ function showBanner(text) {
     el.id = 'conn-banner';
     document.body.appendChild(el);
   }
+  const wasVisible = el.textContent && !el.classList.contains('hidden');
   el.textContent = text;
   el.classList.remove('hidden');
+  if (!wasVisible) fxIn(el, { y: -16, duration: 0.3 }); // desce do topo; troca de texto não re-anima
 }
 
 function hideBanner() {
@@ -70,6 +84,7 @@ function maybeSuggestInstall() {
   if (standalone) { localStorage.setItem('hx-install-done', '1'); return; } // já instalado
   localStorage.setItem('hx-install-done', '1'); // mostra só nesta primeira vez
   $('install-overlay').classList.remove('hidden');
+  fxModal($('install-overlay'));
 }
 $('install-yes').onclick = async () => {
   $('install-overlay').classList.add('hidden');
@@ -255,6 +270,8 @@ function applyServerView(res) {
   });
   document.querySelector('.content').classList.remove('chat-open'); // troca de servidor volta pro chat
   scrollMessages();
+  // Troca de servidor: conteúdo novo entra com fade curto (só opacidade — não mexe no scroll)
+  if (fx) fx.from('#messages, #user-list', { opacity: 0, duration: 0.18, ease: 'power1.out', clearProps: 'opacity' });
 }
 
 // Barra de servidores (esquerda): ícones com iniciais, clicáveis para trocar
@@ -595,6 +612,7 @@ function trimMessages() {
 socket.on('chat-message', (msg) => {
   const stick = nearBottom() || msg.username === username; // mensagem própria sempre rola
   renderMessage(msg);
+  fxIn($('messages').lastElementChild); // só mensagem ao vivo anima; histórico entra pronto
   if (stick) { scrollMessages(); trimMessages(); }
   clearTyping(msg.username); // a mensagem chegou: some o "está digitando"
   const mentioned = msg.username !== username && mentionsMe(msg.text);
@@ -710,6 +728,7 @@ function renderOffline() {
 socket.on('user-joined', ({ id, username: name, avatar }) => {
   if (typeof avatar === 'string') { avatares.set(name, avatar); refreshAvatars(name); }
   addUser(id, name);
+  fxIn($('user-' + id), { y: 4, duration: 0.2 });
   renderOffline();
   systemMessage(name + ' entrou no servidor');
 });
@@ -1056,6 +1075,7 @@ function toggleDeafen() {
 
 socket.on('voice-user-joined', ({ id, username: name, room }) => {
   addVoiceUser(id, name, false, false, room);
+  fxIn($('voice-user-' + id), { y: 4, duration: 0.2 });
   systemMessage(name + ' entrou em ' + voiceRoomName(room));
   if (inVoice && room === currentRoom) playSound('userJoin'); // só alerta se for na minha sala
   // Conexão criada sob demanda quando a oferta do novato chegar
@@ -1589,6 +1609,7 @@ $('user-footer').onclick = () => {
   $('profile-error').textContent = '';
   $('profile-ok').textContent = '';
   $('profile-overlay').classList.remove('hidden');
+  fxModal($('profile-overlay'));
   startVadMeter(); // medidor ao vivo do microfone enquanto o perfil está aberto
 };
 
@@ -1734,6 +1755,7 @@ function openUserProfile(id, name) {
     };
   }
   $('user-overlay').classList.remove('hidden');
+  fxModal($('user-overlay'));
 }
 
 function closeUserProfile() {
@@ -1847,6 +1869,7 @@ function addScreenTile(id, stream, muted = false) {
 
   tile.append(video, label, controls);
   $('screens').appendChild(tile);
+  fxIn(tile, { y: 0, scale: 0.98, duration: 0.3 });
   updateLiveMode();
   // Cada tile ocupa 100% da altura: a live nova nasceria fora da vista (abaixo da atual)
   tile.scrollIntoView({ block: 'center' });

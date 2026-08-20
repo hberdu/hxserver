@@ -1,7 +1,7 @@
 // Service worker: código vai à rede primeiro (deploy chega na hora); cache cobre o offline.
 // Estáticos raros (ícones/manifest) ficam em stale-while-revalidate.
-const CACHE = 'hx-v13';
-const ASSETS = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/socket.io/socket.io.js', '/icons/icon-192.png', '/icons/icon-512.png'];
+const CACHE = 'hx-v14';
+const ASSETS = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/socket.io/socket.io.js', '/vendor/gsap.min.js', '/icons/icon-192.png', '/icons/icon-512.png'];
 const NETWORK_FIRST = ['/', '/index.html', '/app.js', '/style.css', '/socket.io/socket.io.js'];
 
 self.addEventListener('install', (e) => {
