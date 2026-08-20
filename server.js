@@ -247,6 +247,7 @@ const state = {
   deafened: new Set(), // socketIds com o canal silenciado (não ouvem ninguém)
   sharing: new Set(),  // socketIds transmitindo tela
   thumbs: new Map(),   // socketId -> último thumbnail (data URL)
+  watchers: new Map(), // sharerId -> Set de socketIds assistindo a live dele
 };
 for (const s of SERVERS) state.messages[s.id] = historyFor.all(s.id);
 
@@ -270,8 +271,21 @@ function serverSnapshot(serverId) {
     users: [...state.users].filter(([id]) => here(id)).map(([id, username]) => ({ id, username })),
     voiceUsers: [...state.voice].filter(([id]) => inRoom(id))
       .map(([id, room]) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id), room })),
-    sharers: [...state.sharing].filter((id) => here(id)).map((id) => ({ id, username: state.users.get(id), thumb: state.thumbs.get(id) || null })),
+    sharers: [...state.sharing].filter((id) => here(id)).map((id) => ({
+      id,
+      username: state.users.get(id),
+      thumb: state.thumbs.get(id) || null,
+      watchers: watcherNames(id),
+    })),
   };
+}
+
+// Nomes de quem assiste a live de um transmissor; broadcast a cada mudança (entrar/sair/cair)
+function watcherNames(sharerId) {
+  return [...(state.watchers.get(sharerId) || [])].map((v) => state.users.get(v)).filter(Boolean);
+}
+function emitWatchers(sharerId) {
+  io.to(srvRoom(ROOM_SERVER.get(state.voice.get(sharerId)))).emit('watchers', { id: sharerId, names: watcherNames(sharerId) });
 }
 
 const MAX_NAME = 32;
@@ -390,8 +404,11 @@ io.on('connection', (socket) => {
       const dur = Math.round((Date.now() - (shareStart.get(id) || Date.now())) / 1000);
       shareStart.delete(id);
       console.log(`[share] fim: ${name} após ${dur}s — motivo: sessão substituída por nova conexão da mesma conta`);
+      if (state.watchers.delete(id)) io.to(voiceSv).emit('watchers', { id, names: [] });
       io.to(voiceSv).emit('screen-share', { id, username: name, on: false });
     }
+    // Conexão antiga também some das plateias em que estava
+    state.watchers.forEach((set, sid) => { if (set.delete(id)) emitWatchers(sid); });
     if (state.voice.delete(id)) {
       console.log(`[voz] saiu: ${name} — motivo: sessão substituída por nova conexão da mesma conta`);
       io.to(voiceSv).emit('voice-user-left', { id });
@@ -672,12 +689,15 @@ io.on('connection', (socket) => {
       const dur = Math.round((Date.now() - (shareStart.get(socket.id) || Date.now())) / 1000);
       shareStart.delete(socket.id);
       console.log(`[share] fim: ${username} após ${dur}s — motivo: ${reason}`);
+      if (state.watchers.delete(socket.id)) dest.emit('watchers', { id: socket.id, names: [] });
       dest.emit('screen-share', { id: socket.id, username, on: false });
     }
   }
 
   function leaveVoice(reason = 'não especificado') {
     stopSharing(reason);
+    // Quem sai da voz deixa de assistir qualquer live
+    state.watchers.forEach((set, sid) => { if (set.delete(socket.id)) emitWatchers(sid); });
     state.muted.delete(socket.id);
     state.deafened.delete(socket.id);
     if (state.voice.has(socket.id)) {
@@ -733,7 +753,12 @@ io.on('connection', (socket) => {
     const room = state.voice.get(socket.id);
     // Só assiste quem transmite na MESMA sala
     const ok = typeof to === 'string' && !!room && state.voice.get(to) === room && state.sharing.has(to);
-    if (ok) io.to(to).emit('watch-request', { from: socket.id });
+    if (ok) {
+      io.to(to).emit('watch-request', { from: socket.id });
+      if (!state.watchers.has(to)) state.watchers.set(to, new Set());
+      state.watchers.get(to).add(socket.id);
+      emitWatchers(to);
+    }
     if (typeof ack === 'function') ack({ ok });
   });
 
@@ -741,6 +766,7 @@ io.on('connection', (socket) => {
     const to = payload && payload.to;
     if (typeof to !== 'string' || !state.voice.has(to)) return;
     io.to(to).emit('watch-stop', { from: socket.id });
+    if (state.watchers.get(to)?.delete(socket.id)) emitWatchers(to);
   });
 
   // socket.io entrega o motivo do disconnect: 'transport close' (rede/aba fechada),

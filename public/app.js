@@ -278,7 +278,7 @@ function applyServerView(res) {
   renderOffline();
   (res.voiceUsers || []).forEach((user) => addVoiceUser(user.id, user.username, user.muted, user.deafened, user.room));
   (res.sharers || []).forEach((s) => {
-    sharers.set(s.id, { username: s.username, thumb: s.thumb });
+    sharers.set(s.id, { username: s.username, thumb: s.thumb, watchers: s.watchers || [] });
     updateBadge(s.id, true);
   });
   document.querySelector('.content').classList.remove('chat-open'); // troca de servidor volta pro chat
@@ -1310,11 +1310,26 @@ function getPeer(peerId) {
     }
   };
 
+  // Par morto de verdade (fechou a aba/caiu): o evento de saída pode nunca chegar (ex.: vista em
+  // outro servidor). Sem esta limpeza, sobra tile preto + badge fantasma + watching preso — e
+  // re-assistir a pessoa quando ela volta não funciona.
+  const peerDead = () => {
+    if (pc.connectionState === 'connected') return;
+    removeVoiceUser(peerId); // some da sala (e o tile via removeScreenTile)
+    sharerGone(peerId);      // badge/preview/watching/stream em cache
+    removePeer(peerId);
+  };
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'connected') state.restarts = 0;
+    if (pc.connectionState === 'connected') { state.restarts = 0; clearTimeout(state.deadTimer); }
     else if (pc.connectionState === 'failed') {
-      if (++state.restarts <= 3) pc.restartIce(); // re-oferta flui pela negociação perfeita
-      else systemMessage('Não foi possível conectar com ' + voiceUserName(peerId) + ' (rede restritiva).');
+      if (++state.restarts <= 3) {
+        pc.restartIce(); // re-oferta flui pela negociação perfeita
+        clearTimeout(state.deadTimer);
+        state.deadTimer = setTimeout(peerDead, 8000); // restart sem sucesso em 8s = par morto
+      } else {
+        systemMessage('Não foi possível conectar com ' + voiceUserName(peerId) + ' (rede restritiva).');
+        peerDead();
+      }
     } else if (pc.connectionState === 'closed') removePeer(peerId);
   };
 
@@ -1329,6 +1344,7 @@ function getPeer(peerId) {
 function removePeer(peerId) {
   const state = peers.get(peerId);
   if (!state) return;
+  clearTimeout(state.deadTimer); // watchdog de par morto não pode disparar após a limpeza
   peers.delete(peerId);
   if (viewerSenders.delete(peerId)) retuneSenders(); // espectador caiu: redistribui banda
   watching.delete(peerId);
@@ -1516,6 +1532,21 @@ socket.on('screen-thumb', ({ id, img }) => {
   s.thumb = img;
   if (previewId === id) updatePreview();
 });
+
+// Plateia da live: avatares no rodapé do tile, ao lado do nome de quem transmite
+socket.on('watchers', ({ id, names } = {}) => {
+  const s = sharers.get(id);
+  if (s) s.watchers = Array.isArray(names) ? names : [];
+  renderTileViewers(id);
+});
+
+function renderTileViewers(id) {
+  const box = document.querySelector('#screen-' + CSS.escape(id) + ' .tile-viewers');
+  if (!box) return;
+  const names = sharers.get(id)?.watchers || [];
+  box.replaceChildren(...names.map((n) => avatarEl(n, 18)));
+  box.title = names.length ? 'Assistindo: ' + names.join(', ') : '';
+}
 
 function sharerGone(id) {
   if (!sharers.delete(id)) return;
@@ -1852,7 +1883,11 @@ function addScreenTile(id, stream, muted = false) {
 
   const label = document.createElement('div');
   label.className = 'label';
-  label.textContent = isSelf ? 'Sua tela' : voiceUserName(id);
+  const labelName = document.createElement('span');
+  labelName.textContent = isSelf ? 'Sua tela' : voiceUserName(id);
+  const viewersBox = document.createElement('div');
+  viewersBox.className = 'tile-viewers';
+  label.append(labelName, viewersBox);
 
   const controls = document.createElement('div');
   controls.className = 'controls';
@@ -1908,6 +1943,7 @@ function addScreenTile(id, stream, muted = false) {
 
   tile.append(video, label, controls);
   $('screens').appendChild(tile);
+  renderTileViewers(id); // plateia atual (snapshot ou eventos anteriores)
   fxIn(tile, { y: 0, scale: 0.98, duration: 0.3 });
   updateLiveMode();
   // Cada tile ocupa 100% da altura: a live nova nasceria fora da vista (abaixo da atual)

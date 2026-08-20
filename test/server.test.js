@@ -169,6 +169,34 @@ test('watch responde ack: ok=true quando transmite, ok=false quando não', async
   assert.equal((await req).from, b.id);
 });
 
+test('watchers: plateia propaga ao assistir, parar e sair da voz', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  await joinVoice(a);
+  await joinVoice(b);
+  a.emit('screen-share', { on: true });
+  await sleep(50);
+
+  let w = once(a, 'watchers');
+  await emitAck(b, 'watch', { to: a.id });
+  let ev = await w;
+  assert.equal(ev.id, a.id);
+  assert.deepEqual(ev.names, ['beto']);
+
+  w = once(a, 'watchers');
+  b.emit('unwatch', { to: a.id });
+  ev = await w;
+  assert.deepEqual(ev.names, []);
+
+  w = once(a, 'watchers');
+  await emitAck(b, 'watch', { to: a.id });
+  assert.deepEqual((await w).names, ['beto']);
+
+  w = once(a, 'watchers');
+  b.emit('leave-voice');
+  assert.deepEqual((await w).names, []); // sair da voz também sai da plateia
+});
+
 test('set-avatar: salva no banco, propaga e chega no login de quem entra depois', async () => {
   const a = await loggedClient('ana');
   const b = await loggedClient('beto');
