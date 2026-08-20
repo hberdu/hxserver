@@ -746,7 +746,6 @@ socket.on('user-joined', ({ id, username: name, avatar }) => {
   addUser(id, name);
   fxIn($('user-' + id), { y: 4, duration: 0.2 });
   renderOffline();
-  systemMessage(name + ' entrou no servidor');
 });
 
 socket.on('user-left', ({ id, username: name }) => {
@@ -758,7 +757,6 @@ socket.on('user-left', ({ id, username: name }) => {
   renderOffline();
   // Libera a foto da memória se não está mais em nenhum avatar renderizado
   if (name && !document.querySelector('.avatar[data-name="' + CSS.escape(name) + '"]')) avatares.delete(name);
-  systemMessage(name + ' saiu do servidor');
 });
 
 // ---------- Canal de voz (UI) ----------
@@ -1093,7 +1091,6 @@ function toggleDeafen() {
 socket.on('voice-user-joined', ({ id, username: name, room }) => {
   addVoiceUser(id, name, false, false, room);
   fxIn($('voice-user-' + id), { y: 4, duration: 0.2 });
-  systemMessage(name + ' entrou em ' + voiceRoomName(room));
   if (inVoice && room === currentRoom) playSound('userJoin'); // só alerta se for na minha sala
   // Conexão criada sob demanda quando a oferta do novato chegar
 });
@@ -1519,7 +1516,6 @@ socket.on('screen-share', ({ id, username: name, on }) => {
   if (on) {
     sharers.set(id, { username: name, thumb: sharers.get(id)?.thumb || null });
     updateBadge(id, true);
-    systemMessage(name + ' está transmitindo a tela');
     if (inVoice) playSound('screenOn');
   } else {
     sharerGone(id);
@@ -1552,7 +1548,9 @@ function sharerGone(id) {
   if (!sharers.delete(id)) return;
   updateBadge(id, false);
   watching.delete(id);
-  screenStreams.delete(id); // transmissão encerrou de verdade: descarta o stream em cache
+  // NÃO apaga screenStreams aqui: o receiver continua válido no pc. Na próxima live o transmissor
+  // faz replaceTrack (sem novo ontrack) — sem o cache, o re-assistir esperaria um evento que nunca
+  // vem e travava. O cache só morre com o pc (removePeer).
   removeScreenTile(id);
   if (previewId === id) hidePreview();
 }
@@ -1719,7 +1717,6 @@ function applyRename(id, oldName, newName) {
 socket.on('user-renamed', ({ id, oldName, newName } = {}) => {
   if (typeof id !== 'string' || typeof newName !== 'string') return;
   applyRename(id, oldName, newName);
-  systemMessage(oldName + ' agora se chama ' + newName);
 });
 
 $('rename-save').onclick = () => {
@@ -1942,14 +1939,20 @@ function addScreenTile(id, stream, muted = false) {
   }
 
   tile.append(video, label, controls);
-  $('screens').appendChild(tile);
+  // A própria live fica sempre no FIM do feed: live nova dos outros entra acima dela,
+  // visível de cara (antes nascia "lá embaixo", escondida atrás da sua)
+  const own = document.getElementById('screen-' + selfId);
+  if (!isSelf && own) $('screens').insertBefore(tile, own);
+  else $('screens').appendChild(tile);
   renderTileViewers(id); // plateia atual (snapshot ou eventos anteriores)
-  fxIn(tile, { y: 0, scale: 0.98, duration: 0.3 });
+  // Sem animação de entrada: transform em filho de container com scroll-snap re-snapava o feed
   updateLiveMode();
-  // Cada tile ocupa 100% da altura: a live nova nasceria fora da vista (abaixo da atual)
+  // Cada tile ocupa 100% da altura: a live nova nasceria fora da vista
   tile.scrollIntoView({ block: 'center' });
 }
 
 function removeScreenTile(id) {
-  fxOut(document.getElementById('screen-' + id), updateLiveMode);
+  // Remoção seca: fade de saída segurava o tile 150ms no feed e o scroll-snap re-snapava ao topo
+  document.getElementById('screen-' + id)?.remove();
+  updateLiveMode();
 }

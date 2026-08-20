@@ -96,7 +96,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
   flex: 1;
   display: block;                       /* pilha vertical: uma live por vez, não grid */
   padding: 0;
-  scroll-snap-type: y mandatory;        /* cada scroll assenta numa live */
+  scroll-snap-type: y proximity;        /* assenta perto de uma live, sem prender: mandatory re-snapava
+                                           ao topo toda vez que um tile entrava/saía do feed */
   scroll-behavior: smooth;              /* transição suave */
   scrollbar-width: thin;                /* Firefox: barra fina cinza */
   scrollbar-color: #4e5058 transparent;
