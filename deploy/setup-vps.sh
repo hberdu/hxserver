@@ -8,10 +8,13 @@ DOMAIN="${1:-hx-chat.com.br}"
 REPO="https://github.com/hberdu/hxserver.git"
 APP_DIR=/opt/hx
 
-command -v node >/dev/null || { echo "ERRO: Node não encontrado (precisa 22+)"; exit 1; }
+# Node 22+ (node:sqlite): instala via NodeSource se ausente ou velho
+if ! command -v node >/dev/null || ! node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)'; then
+  echo "== Instalando Node 22 (NodeSource) =="
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y -q nodejs
+fi
 NODE_BIN="$(command -v node)"
-node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' \
-  || { echo "ERRO: Node $(node -v) — node:sqlite exige 22+"; exit 1; }
 
 echo "== Pacotes base + Caddy =="
 export DEBIAN_FRONTEND=noninteractive
