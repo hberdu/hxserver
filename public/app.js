@@ -1399,10 +1399,15 @@ let sfuLive = false;    // minha live está publicada no SFU (gate do fallback P
 let sfuProducers = [];
 const sfuConsumers = new Map(); // sharerId -> [Consumer]
 
+// Ack com prazo: servidor antigo/sem handler não responde — sem isto o await penduraria o fluxo
+function sfuAck(event, payload) {
+  return new Promise((r) => socket.timeout(4000).emit(event, payload, (err, res) => r(err ? null : res)));
+}
+
 async function sfuInit() {
   if (sfuDevice !== null) return sfuDevice;
   if (!window.mediasoupClient) return (sfuDevice = false);
-  const res = await new Promise((r) => socket.emit('sfu-caps', {}, r));
+  const res = await sfuAck('sfu-caps', {});
   if (!res || !res.ok) return (sfuDevice = false);
   try {
     const d = new mediasoupClient.Device();
@@ -1413,7 +1418,7 @@ async function sfuInit() {
 }
 
 async function sfuTransport(dir) {
-  const params = await new Promise((r) => socket.emit('sfu-create-transport', { dir }, r));
+  const params = await sfuAck('sfu-create-transport', { dir });
   if (!params || !params.ok) return null;
   const t = dir === 'send' ? sfuDevice.createSendTransport(params) : sfuDevice.createRecvTransport(params);
   t.on('connect', ({ dtlsParameters }, cb, errb) => {
@@ -1456,7 +1461,7 @@ async function sfuWatch(id) {
     if (!sfuRecv) return false;
     // Até 3 tentativas: o transmissor pode ainda estar publicando (corrida watch × produce)
     for (let i = 0; i < 3; i++) {
-      const res = await new Promise((r) => socket.emit('sfu-consume', { sharer: id, rtpCapabilities: sfuDevice.rtpCapabilities }, r));
+      const res = await sfuAck('sfu-consume', { sharer: id, rtpCapabilities: sfuDevice.rtpCapabilities });
       if (res && res.ok && res.consumers.length) {
         if (!watching.has(id)) return true; // desistiu durante a espera
         sfuUnwatch(id); // consumers antigos (re-assistir) não vazam
