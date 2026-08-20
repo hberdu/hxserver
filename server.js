@@ -101,9 +101,10 @@ app.use(express.static('public'));
 // conta do rate limit por IP + cap de conexões, não de um gate de acesso.
 
 // ---------- Banco: usuários com senha em hash scrypt (irreversível) ----------
-// Disco persistente do Render monta em /data: usa direto, sem depender de env var no dashboard
+// Disco/volume persistente (Render ou Railway) monta em /data: usa direto, sem env var no dashboard
 const DB_PATH = process.env.HX_DB || (fs.existsSync('/data') ? '/data/hx.db' : path.join(__dirname, 'hx.db'));
-console.log(`[db] usando ${DB_PATH}${process.env.RENDER && DB_PATH.startsWith(__dirname) ? ' (ATENÇÃO: sem disco em /data — banco efêmero, zera a cada deploy)' : ''}`);
+const NA_NUVEM = process.env.RENDER || process.env.RAILWAY_ENVIRONMENT;
+console.log(`[db] usando ${DB_PATH}${NA_NUVEM && DB_PATH.startsWith(__dirname) ? ' (ATENÇÃO: sem volume em /data — banco efêmero, zera a cada deploy)' : ''}`);
 const db = new DatabaseSync(DB_PATH);
 db.exec(`CREATE TABLE IF NOT EXISTS users (
   username TEXT PRIMARY KEY COLLATE NOCASE,

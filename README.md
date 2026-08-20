@@ -19,24 +19,32 @@ Abra http://localhost:3000, crie uma conta (usuário + senha) e entre.
 - **Assistir**: quem transmite ganha o badge vermelho **AO VIVO** ao lado do nome no canal de voz. Clique no badge para ver a prévia (atualizada a cada 3s) e então **Assistir** — o vídeo só é enviado a quem assiste.
 - Outra pessoa na mesma rede: http://SEU_IP:3000 (mic/tela fora de localhost exigem HTTPS).
 
-## Deploy permanente (Render — URL fixa hx-chat.onrender.com)
+## Deploy permanente
 
-1. Crie um repositório em https://github.com/new (ex: `hx-chat`, privado serve)
-2. No terminal do projeto:
-   ```
-   git remote add origin https://github.com/SEU_USUARIO/hx-chat.git
-   git push -u origin main
-   ```
-3. Em https://render.com: login com GitHub → **New → Blueprint** → escolha o repo → Apply (o [render.yaml](render.yaml) configura tudo)
-4. URL final: `https://hx-chat.onrender.com` (se o nome estiver ocupado, o Render sufixa)
+O servidor detecta sozinho um disco/volume montado em `/data` e guarda o banco lá (contas
+sobrevivem a deploy). Sem volume, o banco é efêmero e zera a cada deploy.
+
+### Railway ([railway.json](railway.json))
+
+1. https://railway.com → login com GitHub → **New Project → Deploy from GitHub repo** → escolha o repo
+2. No serviço: clique direito → **Attach Volume** → mount path `/data` (sem volume as contas zeram!)
+3. **Settings → Networking → Generate Domain** para a URL pública
+4. Confira em `https://SUA-URL/healthz?token=hx-metrics`: deve mostrar `"persistent":true`
+
+Preço: trial de $5 único; depois plano Hobby $5/mês. Regiões: EUA, Europa, Sudeste Asiático
+(não há região na América do Sul).
+
+### Render ([render.yaml](render.yaml))
+
+1. https://render.com: login com GitHub → **New → Blueprint** → escolha o repo → Apply
+2. No serviço: **Disks → Add Disk** → mount path `/data`, 1 GB (plano Starter+; o free não tem disco)
+3. URL final: `https://hx-chat.onrender.com` (se o nome estiver ocupado, o Render sufixa)
 
 Registro é **público** (qualquer um cria conta) — pensado para um grupo de amigos, sem configuração. Não depende de variáveis de ambiente.
 
 Anti-abuso embutido: limite de conexões e de tentativas de login **por IP** (sobrevive à reconexão), semáforo de scrypt (flood de login não trava o servidor), cabeçalhos CSP/HSTS/nosniff/anti-clickjacking, checagem de origem no handshake e rotação de token de sessão. Métricas de `/healthz` ficam atrás de um token (`/healthz?token=hx-metrics`); sem ele, `/healthz` devolve só `{ok:true}`.
 
-**Keep-alive / anti-hibernação:** aponte um monitor externo grátis (UptimeRobot, cron-job.org) para `https://SEU-APP.onrender.com/healthz` a cada 5 min — evita a instância dormir e avisa quando cai.
-
-Limitações do plano grátis: a instância dorme após ~15min sem uso (primeiro acesso demora ~30s) e o disco é efêmero — `hx.db` zera a cada deploy/restart (contas precisam ser recriadas). Para persistir: disco pago do Render ou migrar contas para Postgres/Turso.
+**Keep-alive / anti-hibernação (Render free):** aponte um monitor externo grátis (UptimeRobot, cron-job.org) para `https://SEU-APP/healthz` a cada 5 min — evita a instância dormir e avisa quando cai.
 
 ## Publicar na web (túnel temporário)
 
