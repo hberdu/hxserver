@@ -1065,10 +1065,9 @@ function toggleDeafen() {
   fxTap($('deafen-btn'));
   deafened = !deafened;
   document.querySelectorAll('audio[id^="audio-"]').forEach((a) => { a.muted = deafened; });
-  // Silenciado também cala o áudio das lives dos outros (mas nunca a própria tela)
-  document.querySelectorAll('.screen-tile video').forEach((v) => {
-    if (v.closest('.screen-tile')?.id !== 'screen-' + selfId) v.muted = deafened;
-  });
+  // Silenciado também cala as lives dos outros — via applyMute de cada tile: o ícone de volume
+  // acompanha e o mudo manual do tile é respeitado ao des-silenciar (a própria tela não tem handler)
+  document.querySelectorAll('.screen-tile video').forEach((v) => v._applyMute?.());
   $('deafen-btn').classList.toggle('active', deafened);
   $('deafen-btn').setAttribute('aria-pressed', deafened);
   $('deafen-icon').setAttribute('href', deafened ? '#i-headset-off' : '#i-headset');
@@ -1856,25 +1855,30 @@ function addScreenTile(id, stream, muted = false) {
     slider.value = 100;
     slider.className = 'tile-vol';
     slider.title = 'Volume da live';
-    const setIcon = (btn) => btn.querySelector('use').setAttribute('href', video.muted ? '#i-volume-x' : '#i-volume');
-    const volBtn = tileButton('volume', 'Mudo / Som da live', () => {
-      video.muted = !video.muted;
-      if (!video.muted) video.play().catch(() => {});
-      setIcon(volBtn);
+    // Fonte da verdade: mudo manual (botão do tile) OU silenciado geral (headset).
+    // Centralizado para o ícone/slider nunca dessincronizarem do estado real do áudio.
+    let userMuted = muted;
+    let volBtn; // atribuído logo abaixo; applyMute só roda depois
+    const applyMute = () => {
+      video.muted = userMuted || deafened;
+      volBtn.querySelector('use').setAttribute('href', video.muted ? '#i-volume-x' : '#i-volume');
       slider.disabled = video.muted;
-    });
+      if (!video.muted) video.play().catch(() => {});
+    };
+    volBtn = tileButton('volume', 'Mudo / Som da live', () => { userMuted = !userMuted; applyMute(); });
     slider.oninput = () => {
       video.volume = slider.value / 100;
-      if (video.volume > 0 && video.muted) { video.muted = false; setIcon(volBtn); }
-      slider.disabled = false;
+      if (video.volume > 0) userMuted = false;
+      applyMute();
     };
-    setIcon(volBtn);            // reflete o estado inicial (mudo se silenciado)
-    slider.disabled = video.muted;
+    applyMute();                 // reflete o estado inicial (mudo se silenciado)
+    video._applyMute = applyMute; // toggleDeafen re-sincroniza cada tile por aqui
     controls.append(volBtn, slider);
-  }
 
-  controls.append(tileButton('fullscreen', 'Tela cheia', () => video.requestFullscreen?.().catch(() => {})));
-  video.ondblclick = () => video.requestFullscreen?.().catch(() => {});
+    // Maximizar: só live dos outros — a própria não tem por quê (é a sua tela ao vivo)
+    controls.append(tileButton('fullscreen', 'Tela cheia', () => video.requestFullscreen?.().catch(() => {})));
+    video.ondblclick = () => video.requestFullscreen?.().catch(() => {});
+  }
 
   tile.append(video, label, controls);
   $('screens').appendChild(tile);
