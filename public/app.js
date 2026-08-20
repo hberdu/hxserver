@@ -85,6 +85,22 @@ $('install-yes').onclick = async () => {
 };
 $('install-no').onclick = () => $('install-overlay').classList.add('hidden');
 
+// Botão fixo no fim da lista de membros: só na versão web (some no app instalado)
+const isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone;
+if (!isStandalone) $('install-side').classList.remove('hidden');
+$('install-side').onclick = async () => {
+  if (installPrompt) {
+    const p = installPrompt;
+    installPrompt = null;
+    $('install-btn').classList.add('hidden');
+    p.prompt();
+    await p.userChoice.catch(() => {});
+  } else {
+    systemMessage('Para instalar: menu do navegador → "Instalar aplicativo" (ou ícone na barra de endereço).');
+  }
+};
+window.addEventListener('appinstalled', () => $('install-side').classList.add('hidden'));
+
 // ---------- Avatares (foto do perfil, ou inicial com cor determinística) ----------
 const avatares = new Map(); // username -> data URL da foto
 
