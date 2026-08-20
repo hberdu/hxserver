@@ -110,6 +110,14 @@ $('install-yes').onclick = async () => {
 };
 $('install-no').onclick = () => $('install-overlay').classList.add('hidden');
 
+// Sair da conta: mata a sessão no servidor, some com o token local e volta pro login
+$('logout-btn').onclick = () => {
+  socket.emit('logout', { token: localStorage.getItem('hx-token') });
+  localStorage.removeItem('hx-token');
+  sessionStorage.removeItem('hx-voice-room');
+  location.reload();
+};
+
 // Botão fixo no fim da lista de membros: clique abre o prompt nativo direto
 $('install-side').onclick = consumeInstallPrompt;
 window.addEventListener('appinstalled', () => $('install-side').classList.add('hidden'));
