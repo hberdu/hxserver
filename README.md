@@ -22,7 +22,20 @@ Abra http://localhost:3000, crie uma conta (usuário + senha) e entre.
 ## Deploy permanente
 
 O servidor detecta sozinho um disco/volume montado em `/data` e guarda o banco lá (contas
-sobrevivem a deploy). Sem volume, o banco é efêmero e zera a cada deploy.
+sobrevivem a deploy). Sem volume, o banco é efêmero e zera a cada deploy. Em VPS o
+filesystem é persistente por natureza — o banco fica em `hx.db` no diretório do app.
+
+### VPS própria (Ubuntu + Caddy) — [deploy/setup-vps.sh](deploy/setup-vps.sh)
+
+Pré-requisitos: Node 22+, domínio com A record apontando pro IP da VPS. Como root:
+
+```
+curl -fsSL https://raw.githubusercontent.com/hberdu/hxserver/main/deploy/setup-vps.sh | bash
+```
+
+Instala Caddy (HTTPS automático via Let's Encrypt), clona o app em `/opt/hx`, cria o serviço
+systemd `hx` (sobe no boot, reinicia se cair) e configura o proxy. Rodar de novo = atualizar.
+Outro domínio: `... | bash -s -- meudominio.com`. Logs: `journalctl -u hx -f`.
 
 ### Railway ([railway.json](railway.json))
 
