@@ -100,7 +100,9 @@ app.use(express.static('public'));
 // conta do rate limit por IP + cap de conexões, não de um gate de acesso.
 
 // ---------- Banco: usuários com senha em hash scrypt (irreversível) ----------
-const db = new DatabaseSync(process.env.HX_DB || path.join(__dirname, 'hx.db'));
+const DB_PATH = process.env.HX_DB || path.join(__dirname, 'hx.db');
+console.log(`[db] usando ${DB_PATH}${process.env.HX_DB ? '' : ' (ATENÇÃO: HX_DB não definido — efêmero em produção)'}`);
+const db = new DatabaseSync(DB_PATH);
 db.exec(`CREATE TABLE IF NOT EXISTS users (
   username TEXT PRIMARY KEY COLLATE NOCASE,
   salt TEXT NOT NULL,
