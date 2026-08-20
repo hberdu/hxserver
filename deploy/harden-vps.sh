@@ -8,10 +8,12 @@ echo "== pacotes =="
 apt-get update -qq
 apt-get install -y -qq ufw fail2ban unattended-upgrades sqlite3
 
-echo "== firewall: só SSH/80/443 =="
+echo "== firewall: SSH/80/443 + mídia do SFU (40000-40100) =="
 ufw allow OpenSSH >/dev/null
 ufw allow 80/tcp >/dev/null
 ufw allow 443/tcp >/dev/null
+ufw allow 40000:40100/udp >/dev/null
+ufw allow 40000:40100/tcp >/dev/null
 ufw --force enable
 # fecha o acesso direto à porta 3000 do Node (só o Caddy fala com ela por dentro)
 
