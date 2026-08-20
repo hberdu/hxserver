@@ -99,8 +99,6 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
   scroll-snap-type: y proximity;        /* assenta perto de uma live, sem prender: mandatory re-snapava
                                            ao topo toda vez que um tile entrava/saía do feed */
   scroll-behavior: smooth;              /* transição suave */
-  scrollbar-width: thin;                /* Firefox: barra fina cinza */
-  scrollbar-color: #4e5058 transparent;
 }
 /* Cada live ocupa a tela inteira, centralizada; a próxima só aparece ao rolar (espaço abaixo) */
 .content.live-mode .screen-tile {
@@ -117,11 +115,12 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .content.live-mode .screen-tile video { width: 100%; height: 100%; object-fit: contain; }
 /* Própria live minimizada: faixa fina sem âncora de snap — as lives dos outros dominam o feed */
 .content.live-mode .screen-tile.mini { height: 110px; scroll-snap-align: none; padding: 6px 18px; }
-/* Barra de scroll cinza estilizada (WebKit), no tom da plataforma */
-.content.live-mode .screens::-webkit-scrollbar { width: 12px; }
-.content.live-mode .screens::-webkit-scrollbar-track { background: transparent; }
-.content.live-mode .screens::-webkit-scrollbar-thumb { background: #4e5058; border-radius: 6px; border: 3px solid #1e1f22; }
-.content.live-mode .screens::-webkit-scrollbar-thumb:hover { background: #6d7178; }
+/* Barra de scroll fina cinza em TODO o app (chat, membros, lives) — mesma das lives */
+* { scrollbar-width: thin; scrollbar-color: #4e5058 transparent; } /* Firefox */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #4e5058; border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: #6d7178; }
 
 .screen-tile { position: relative; max-width: 100%; }
 .screen-tile video { width: 100%; max-height: 64vh; object-fit: contain; border-radius: 6px; background: #000; display: block; }
@@ -192,10 +191,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #server-tip .tip-ind { color: #949ba4; display: inline-flex; }
 #server-tip .tip-ind .icon { width: 14px; height: 14px; }
 
-/* Sair da conta (rodapé do perfil) — linha estilo Discord: texto vermelho, fundo no hover */
-#logout-btn { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 8px; padding: 8px 10px; border: none; border-radius: 4px; background: transparent; color: #f23f43; font-size: 14px; cursor: pointer; text-align: left; }
-#logout-btn:hover { background: rgba(242, 63, 67, .12); }
-#logout-btn .icon { width: 16px; height: 16px; }
+/* Sair da conta: mesmo desenho do Remover (btn-danger), largura total e centrado */
+#logout-btn { width: 100%; justify-content: center; margin-top: 16px; }
 
 /* Botão "instalar aplicativo" no fim da lista de membros (só aparece na versão web) */
 #install-side { margin: 14px 4px 4px; padding: 9px 12px; width: calc(100% - 8px); border: none; border-radius: 6px; background: #383a40; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; animation: install-pop .35s ease, install-pulse 2.4s ease 1.2s infinite; }
