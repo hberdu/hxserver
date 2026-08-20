@@ -2087,6 +2087,17 @@ function tileButton(iconId, title, onClick) {
 
 let draggingTile = null; // tile em arrasto no grid de lives
 
+// Nível de zoom do feed: 1 = live centralizada, 2 = grid 2x2, 3 = grid 3x3
+let gridLevel = 1;
+function setGridLevel(n, focusTile) {
+  gridLevel = Math.min(3, Math.max(1, n));
+  const s = $('screens');
+  s.classList.toggle('grid-2', gridLevel === 2);
+  s.classList.toggle('grid-3', gridLevel === 3);
+  // Fechou até a vista centralizada: a live sob o cursor assume a tela
+  if (gridLevel === 1 && focusTile) focusTile.scrollIntoView({ block: 'center' });
+}
+
 function updateLiveMode() {
   const live = $('screens').children.length > 0;
   $('screens').classList.toggle('hidden', !live);
@@ -2201,9 +2212,8 @@ function addScreenTile(id, stream, muted = false) {
   tile.onwheel = (e) => {
     if (e.ctrlKey) return; // zoom do navegador continua funcionando
     e.preventDefault();
-    const cur = tile.getBoundingClientRect().height;
-    const next = Math.min(window.innerHeight * 0.92, Math.max(120, cur * (e.deltaY > 0 ? 0.88 : 1.14)));
-    tile.style.height = next + 'px'; // CSSOM: liberado pela CSP (atributo style inline não é)
+    // Zoom em degraus: para trás abre o grid (2x2 → 3x3); para frente fecha até centralizar esta live
+    setGridLevel(gridLevel + (e.deltaY > 0 ? 1 : -1), tile);
   };
   // A própria live fica sempre no FIM do feed: live nova dos outros entra acima dela,
   // visível de cara (antes nascia "lá embaixo", escondida atrás da sua)
