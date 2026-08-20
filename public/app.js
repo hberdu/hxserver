@@ -1558,13 +1558,14 @@ function showPreview(id, badge) {
   pop.style.left = Math.min(r.right + 8, window.innerWidth - 320) + 'px';
   pop.style.top = Math.min(r.top, window.innerHeight - 240) + 'px';
   updatePreview();
+  // Sem animação de entrada: showPreview re-dispara a cada hover no badge e tweens
+  // sobrepostos faziam o popup piscar/sumir debaixo do mouse (é interativo — tem o Assistir)
   pop.classList.remove('hidden');
-  fxIn(pop, { y: 0, x: -6, scale: 0.98, duration: 0.18 });
 }
 
 function schedulePreviewHide() {
   clearTimeout(previewHideTimer);
-  previewHideTimer = setTimeout(hidePreview, 250); // folga para levar o mouse até o popup
+  previewHideTimer = setTimeout(hidePreview, 350); // folga para levar o mouse até o popup
 }
 
 function hidePreview() {
