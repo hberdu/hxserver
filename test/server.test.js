@@ -327,6 +327,26 @@ test('charset do nome: caracteres especiais liberados; invisíveis/controle barr
   assert.equal((await emitAck(c, 'register', { username: 'lud 🐍', password: 'senha123' })).ok, true, 'emoji liberado');
 });
 
+test('voice-roster: lista quem está em chamada num servidor, com mute/deafen', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  await joinVoice(a, 'akon');
+  await joinVoice(b, 'tibia');
+  a.emit('set-muted', { muted: true });
+  await sleep(40);
+
+  const res = await emitAck(b, 'voice-roster', { server: 'hx' });
+  assert.equal(res.ok, true);
+  assert.equal(res.users.length, 2, 'ana e beto na voz do hx');
+  const ra = res.users.find((u) => u.id === a.id);
+  assert.equal(ra.room, 'akon');
+  assert.equal(ra.muted, true, 'ana aparece mutada');
+
+  const vazio = await emitAck(b, 'voice-roster', { server: 'panteras' });
+  assert.equal(vazio.users.length, 0, 'ninguém na voz do panteras');
+  assert.ok((await emitAck(b, 'voice-roster', { server: 'nao-existe' })).error, 'servidor inválido');
+});
+
 test('get-profile: devolve data de cadastro; exige login; nome inexistente falha', async () => {
   const a = await loggedClient('ana');
   const semLogin = await connect();

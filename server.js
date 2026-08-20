@@ -323,7 +323,7 @@ const RATE_COST = {
   watch: 1, unwatch: 1, 'join-voice': 1, 'leave-voice': 1,
   'set-muted': 1, 'set-deafened': 1, 'screen-share': 1,
   logout: 1, 'get-profile': 1, 'ping-hx': 0.5, // ping legítimo é 1 a cada 5s: folga enorme
-  'switch-server': 2,
+  'switch-server': 2, 'voice-roster': 0.5,
 };
 const RATE_MAX = 60;
 const RATE_REFILL = 6; // tokens por segundo
@@ -479,6 +479,21 @@ io.on('connection', (socket) => {
     // e a recuperação para token roubado (o ladrão perde o acesso no próximo login legítimo)
     deleteUserSessions.run(name);
     enterServer(name, ack);
+  });
+
+  // Quem está em chamada num servidor (tooltip ao passar o mouse no ícone do servidor)
+  on('voice-roster', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
+    const sid = payload && payload.server;
+    const srv = SERVERS.find((s) => s.id === sid);
+    if (!srv) return ack({ error: 'Servidor inválido.' });
+    const users = [];
+    for (const [id, room] of state.voice) {
+      if (ROOM_SERVER.get(room) !== sid) continue;
+      users.push({ id, username: state.users.get(id), room, muted: state.muted.has(id), deafened: state.deafened.has(id) });
+    }
+    ack({ ok: true, server: sid, rooms: srv.voiceRooms, users });
   });
 
   // Perfil público de um membro (modal ao clicar no usuário)

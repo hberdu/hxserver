@@ -70,6 +70,10 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .net-line2 { color: #949ba4; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .user-footer { padding: 8px 12px; background: #232428; color: #fff; font-size: 14px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.user-footer #self-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settings-btn { background: none; border: none; color: #b5bac1; cursor: pointer; padding: 5px; border-radius: 4px; flex-shrink: 0; display: inline-flex; }
+#settings-btn:hover { background: #35373c; color: #fff; }
+#settings-btn .icon { width: 18px; height: 18px; }
 .user-footer:hover { background: #3a3c42; }
 
 .content { flex: 1; display: flex; flex-direction: column; background: #313338; }
@@ -165,6 +169,17 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .members li.offline { opacity: .45; }
 
 /* Prévia de transmissão */
+/* Tooltip de quem está em chamada no servidor (hover no ícone) */
+#server-tip { position: fixed; z-index: 40; min-width: 190px; max-width: 260px; background: #111214; border: 1px solid #2b2d31; border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+#server-tip .tip-server { color: #fff; font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+#server-tip .tip-empty { color: #949ba4; font-size: 13px; }
+#server-tip .tip-room { color: #949ba4; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; font-weight: 600; display: flex; align-items: center; gap: 5px; margin: 8px 0 4px; }
+#server-tip .tip-room .icon { width: 13px; height: 13px; }
+#server-tip .tip-user { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: #dbdee1; font-size: 13px; }
+#server-tip .tip-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#server-tip .tip-ind { color: #949ba4; display: inline-flex; }
+#server-tip .tip-ind .icon { width: 14px; height: 14px; }
+
 /* Modal de instalação (primeiro login) */
 #install-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 40; padding: 20px; }
 #install-card { background: #2b2d31; border-radius: 10px; width: 380px; max-width: 100%; padding: 28px 24px; text-align: center; display: flex; flex-direction: column; gap: 12px; }
@@ -231,6 +246,10 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .rename-row input:focus { outline: none; border-color: #5865f2; }
 
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #dbdee1; font-size: 14px; cursor: pointer; }
+/* Respiro entre os controles da seção Áudio (evita o texto colado) */
+.profile-section .toggle-row, .profile-section .vad-row { margin-top: 16px; }
+.profile-section .section-label + .toggle-row { margin-top: 0; }
+.profile-section .toggle-row .section-hint { margin-top: 4px; line-height: 1.35; }
 .toggle-row input { appearance: none; width: 40px; height: 22px; border-radius: 11px; background: #4e5058; position: relative; cursor: pointer; flex-shrink: 0; transition: background .15s; }
 .toggle-row input::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
 .toggle-row input:checked { background: #23a559; }

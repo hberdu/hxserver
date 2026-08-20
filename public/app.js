@@ -253,17 +253,13 @@ function serverName(id) {
   return (serverList.find((s) => s.id === id) || {}).name || 'HX';
 }
 
-// Logos personalizadas por servidor (SVG estático e confiável — sem risco de XSS).
-// Servidor sem logo aqui cai nas iniciais (ex.: Server B).
-const SERVER_LOGOS = {
-  hx: '<svg viewBox="0 0 48 48">'
-    + '<text x="8" y="33" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#fff">H</text>'
-    + '<text x="23" y="37" font-family="Segoe UI, sans-serif" font-style="italic" font-weight="900" font-size="26" fill="#f23f43">X</text>'
-    + '</svg>',
+// Ícone de cada servidor (arquivos em public/icons/). Sem o arquivo, cai nas iniciais.
+// HX usa o próprio ícone do app; os outros, as fotos escolhidas.
+const SERVER_PHOTOS = {
+  hx: 'icons/icon-512.png',
+  panteras: 'icons/as-panteras-1.jpeg',
+  serverb: 'icons/ladyclub.jpg',
 };
-
-// Fotos de servidor (arquivos em public/icons/). Sem o arquivo, cai nas iniciais.
-const SERVER_PHOTOS = { panteras: 'icons/panther.png', serverb: 'icons/castle.png' };
 
 function renderServerRail(servers, active) {
   serverList = servers;
@@ -273,10 +269,8 @@ function renderServerRail(servers, active) {
     const el = document.createElement('div');
     el.className = 'rail-icon' + (s.id === active ? ' active' : '');
     el.id = 'rail-' + s.id;
-    el.title = s.name;
-    if (SERVER_LOGOS[s.id]) {
-      el.innerHTML = SERVER_LOGOS[s.id]; // SVG estático (constante do código)
-    } else if (SERVER_PHOTOS[s.id]) {
+    el.setAttribute('aria-label', s.name); // o tooltip rico mostra o nome; sem title nativo (duplo)
+    if (SERVER_PHOTOS[s.id]) {
       const img = document.createElement('img');
       img.className = 'rail-photo';
       img.src = SERVER_PHOTOS[s.id];
@@ -287,7 +281,71 @@ function renderServerRail(servers, active) {
       el.textContent = serverInitials(s.name);
     }
     el.onclick = () => switchToServer(s.id);
+    el.onmouseenter = () => showServerTip(s.id, el); // quem está em chamada, ao passar o mouse
+    el.onmouseleave = scheduleServerTipHide;
     rail.appendChild(el);
+  });
+}
+
+// ---------- Tooltip: quem está em chamada no servidor (hover no ícone) ----------
+let serverTipFor = null;
+let serverTipHideTimer = null;
+
+function showServerTip(serverId, el) {
+  clearTimeout(serverTipHideTimer);
+  serverTipFor = serverId;
+  socket.emit('voice-roster', { server: serverId }, (res) => {
+    if (serverTipFor !== serverId || !res || !res.ok) return; // hover mudou / erro
+    const tip = $('server-tip');
+    const r = el.getBoundingClientRect();
+    tip.style.left = (r.right + 10) + 'px';
+    tip.style.top = Math.min(r.top, window.innerHeight - 260) + 'px';
+    renderServerTip(res);
+    tip.classList.remove('hidden');
+  });
+}
+function scheduleServerTipHide() {
+  clearTimeout(serverTipHideTimer);
+  serverTipHideTimer = setTimeout(() => { serverTipFor = null; $('server-tip').classList.add('hidden'); }, 150);
+}
+
+function renderServerTip(res) {
+  const tip = $('server-tip');
+  tip.replaceChildren();
+  const head = document.createElement('div');
+  head.className = 'tip-server';
+  head.textContent = serverName(res.server);
+  tip.append(head);
+  if (!res.users.length) {
+    const e = document.createElement('div');
+    e.className = 'tip-empty';
+    e.textContent = 'Ninguém em chamada';
+    tip.append(e);
+    return;
+  }
+  res.rooms.forEach((room) => {
+    const inRoom = res.users.filter((u) => u.room === room.id);
+    if (!inRoom.length) return;
+    const rl = document.createElement('div');
+    rl.className = 'tip-room';
+    rl.innerHTML = '<svg class="icon"><use href="#i-volume"/></svg>';
+    rl.append(' ' + room.name);
+    tip.append(rl);
+    inRoom.forEach((u) => {
+      const row = document.createElement('div');
+      row.className = 'tip-user';
+      row.append(avatarEl(u.username, 22));
+      const nm = document.createElement('span');
+      nm.className = 'tip-name';
+      nm.textContent = u.username + (u.id === selfId ? ' (você)' : '');
+      row.append(nm);
+      const ind = document.createElement('span');
+      ind.className = 'tip-ind';
+      if (u.deafened) ind.innerHTML = '<svg class="icon"><use href="#i-headset-off"/></svg>';
+      else if (u.muted) ind.innerHTML = '<svg class="icon"><use href="#i-mic-off"/></svg>';
+      row.append(ind);
+      tip.append(row);
+    });
   });
 }
 
