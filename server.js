@@ -767,7 +767,8 @@ app.get('/healthz', (req, res) => {
     voice: state.voice.size,
     sharing: state.sharing.size,
     memoryMB: { rss: mb(process.memoryUsage().rss), heap: mb(process.memoryUsage().heapUsed) },
-    db: { path: DB_PATH, persistent: !DB_PATH.startsWith(__dirname) }, // diagnóstico: banco no disco?
+    // Efêmero só em PaaS (Render/Railway) sem volume; em VPS o filesystem já é persistente
+    db: { path: DB_PATH, persistent: !(NA_NUVEM && DB_PATH.startsWith(__dirname)) },
   });
 });
 
