@@ -2085,6 +2085,8 @@ function tileButton(iconId, title, onClick) {
   return b;
 }
 
+let draggingTile = null; // tile em arrasto no grid de lives
+
 function updateLiveMode() {
   const live = $('screens').children.length > 0;
   $('screens').classList.toggle('hidden', !live);
@@ -2180,6 +2182,29 @@ function addScreenTile(id, stream, muted = false) {
   health.className = 'health';
   health.title = 'Saúde da transmissão';
   tile.append(video, label, controls, health);
+
+  // Grid customizável: arrastar reordena as lives; roda do mouse sobre o tile redimensiona
+  tile.draggable = true;
+  tile.ondragstart = (e) => {
+    if (e.target.closest('button, input')) { e.preventDefault(); return; } // slider/botões não arrastam o tile
+    draggingTile = tile;
+    tile.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  };
+  tile.ondragend = () => { tile.classList.remove('dragging'); draggingTile = null; };
+  tile.ondragover = (e) => {
+    if (!draggingTile || draggingTile === tile) return;
+    e.preventDefault();
+    const r = tile.getBoundingClientRect();
+    tile.parentNode.insertBefore(draggingTile, e.clientY < r.top + r.height / 2 ? tile : tile.nextSibling);
+  };
+  tile.onwheel = (e) => {
+    if (e.ctrlKey) return; // zoom do navegador continua funcionando
+    e.preventDefault();
+    const cur = tile.getBoundingClientRect().height;
+    const next = Math.min(window.innerHeight * 0.92, Math.max(120, cur * (e.deltaY > 0 ? 0.88 : 1.14)));
+    tile.style.height = next + 'px'; // CSSOM: liberado pela CSP (atributo style inline não é)
+  };
   // A própria live fica sempre no FIM do feed: live nova dos outros entra acima dela,
   // visível de cara (antes nascia "lá embaixo", escondida atrás da sua)
   const own = document.getElementById('screen-' + selfId);
