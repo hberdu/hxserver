@@ -766,6 +766,7 @@ app.get('/healthz', (req, res) => {
     voice: state.voice.size,
     sharing: state.sharing.size,
     memoryMB: { rss: mb(process.memoryUsage().rss), heap: mb(process.memoryUsage().heapUsed) },
+    db: { path: DB_PATH, persistent: !DB_PATH.startsWith(__dirname) }, // diagnóstico: banco no disco?
   });
 });
 
