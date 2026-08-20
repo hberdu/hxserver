@@ -165,6 +165,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 
 .chat-form { display: flex; padding: 0 16px 20px; gap: 8px; }
 .chat-form input { flex: 1; padding: 11px 14px; border-radius: 8px; border: none; background: #383a40; color: #dbdee1; font-size: 15px; }
+/* Foco sutil no lugar do outline padrão do navegador (anel branco grosso) */
+.chat-form input:focus { outline: none; box-shadow: 0 0 0 1px rgba(88, 101, 242, .45); background: #3c3e45; }
 .chat-form button { padding: 0 18px; border: none; border-radius: 8px; background: #5865f2; color: #fff; font-weight: 600; cursor: pointer; }
 
 .members { width: 200px; background: #2b2d31; padding: 12px 8px; overflow-y: auto; }
