@@ -268,8 +268,7 @@ function serverSnapshot(serverId) {
     serverName: srv.name,
     voiceRooms: srv.voiceRooms,
     messages: state.messages[serverId],
-    // Presença é GLOBAL: online é quem está conectado em qualquer servidor (a lista não é por vista)
-    users: [...state.users].map(([id, username]) => ({ id, username })),
+    users: [...state.users].filter(([id]) => here(id)).map(([id, username]) => ({ id, username })),
     voiceUsers: [...state.voice].filter(([id]) => inRoom(id))
       .map(([id, room]) => ({ id, username: state.users.get(id), muted: state.muted.has(id), deafened: state.deafened.has(id), room })),
     sharers: [...state.sharing].filter((id) => here(id)).map((id) => ({
@@ -393,6 +392,7 @@ io.on('connection', (socket) => {
       old.emit('session-superseded');
       setTimeout(() => old.disconnect(true), 100); // aviso chega antes de fechar
     }
+    const sv = state.viewing.get(id) || DEFAULT_SERVER;             // servidor que a conexão antiga via
     const voiceSv = srvRoom(ROOM_SERVER.get(state.voice.get(id)));  // servidor da sala de voz dela
     console.log(`[sessão] ${name}: conexão ${id} substituída por ${socket.id}`);
     state.users.delete(id);
@@ -413,13 +413,14 @@ io.on('connection', (socket) => {
       console.log(`[voz] saiu: ${name} — motivo: sessão substituída por nova conexão da mesma conta`);
       io.to(voiceSv).emit('voice-user-left', { id });
     }
-    io.emit('user-left', { id, username: name }); // presença global: some para todos
+    io.to(srvRoom(sv)).emit('user-left', { id, username: name });
   }
 
-  // Fotos de perfil de todo mundo online (a lista de membros é global)
-  function onlineAvatars() {
+  // Fotos de perfil de quem está online no MESMO servidor (evita ack gigante com blobs de todo mundo)
+  function onlineAvatars(serverId) {
     const avatars = {};
-    for (const [, n] of state.users) {
+    for (const [id, n] of state.users) {
+      if (state.viewing.get(id) !== serverId) continue;
       const row = getAvatar.get(n);
       if (row && row.avatar) avatars[n] = row.avatar;
     }
@@ -444,23 +445,25 @@ io.on('connection', (socket) => {
       username, // nome canônico do banco (login "ANA" -> "ana")
       servers: SERVERS.map((s) => ({ id: s.id, name: s.name })), // barra de servidores
       allUsers: allUsernames.all().map((r) => r.username),       // membros (seção offline)
-      avatars: onlineAvatars(),
+      avatars: onlineAvatars(DEFAULT_SERVER),
       ...serverSnapshot(DEFAULT_SERVER),
     });
     const own = getAvatar.get(username);
-    socket.broadcast.emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
+    socket.to(srvRoom(DEFAULT_SERVER)).emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
   }
 
-  // Trocar de servidor muda só o que você VÊ (chat/salas). A voz continua na sala em que você está,
+  // Trocar de servidor muda só o que você VÊ (chat/membros). A voz continua na sala em que você está,
   // mesmo em outro servidor — dá para navegar sem cair da call (a presença de voz é por sala, não por view).
-  // Presença global: trocar de vista NÃO emite user-joined/user-left (ninguém "entrou" nem "saiu").
   function switchServer(sid, ack) {
     const from = state.viewing.get(socket.id);
-    if (from === sid) return ack({ ok: true, avatars: onlineAvatars(), ...serverSnapshot(sid) });
+    if (from === sid) return ack({ ok: true, avatars: onlineAvatars(sid), ...serverSnapshot(sid) });
     socket.leave(srvRoom(from));
+    socket.to(srvRoom(from)).emit('user-left', { id: socket.id, username });
     state.viewing.set(socket.id, sid);
     socket.join(srvRoom(sid));
-    ack({ ok: true, avatars: onlineAvatars(), ...serverSnapshot(sid) });
+    ack({ ok: true, avatars: onlineAvatars(sid), ...serverSnapshot(sid) });
+    const own = getAvatar.get(username);
+    socket.to(srvRoom(sid)).emit('user-joined', { id: socket.id, username, avatar: (own && own.avatar) || null });
   }
 
   on('register', async (payload, ack) => {
@@ -772,7 +775,7 @@ io.on('connection', (socket) => {
     if (!loggedIn()) return;
     leaveVoice('desconectou: ' + reason);
     // delete pode já ter acontecido via dropStale: só notifica se éramos nós que removemos
-    if (state.users.delete(socket.id)) socket.broadcast.emit('user-left', { id: socket.id, username });
+    if (state.users.delete(socket.id)) toServer().emit('user-left', { id: socket.id, username });
     state.viewing.delete(socket.id);
   });
 });
