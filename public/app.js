@@ -248,8 +248,10 @@ function enterApp(res) {
     fx.from('.content, .members, .sidebar', { opacity: 0, duration: 0.25, ease: 'power1.out', clearProps: 'opacity' });
   }
   $('self-name').textContent = username;
-  $('self-avatar').replaceChildren(avatarEl(username, 28));
   applyServerView(res); // canal, mensagens, membros, voz e transmissões do servidor atual
+  // Depois do applyServerView: é ele que carrega o mapa de fotos (res.avatars) — antes disso
+  // o avatarEl cairia na inicial (foto sumia do rodapé no login por sessão retomada)
+  $('self-avatar').replaceChildren(avatarEl(username, 28));
   $('chat-input').focus();
   renderNetStatus();
   maybeSuggestInstall(); // primeiro login neste dispositivo: sugere instalar como app
