@@ -79,14 +79,14 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #settings-btn .icon { width: 18px; height: 18px; }
 .user-footer:hover { background: #3a3c42; }
 
-.content { flex: 1; display: flex; flex-direction: column; background: #313338; }
+.content { flex: 1; display: flex; flex-direction: column; background: #313338; position: relative; } /* relative: âncora do painel de emojis */
 .channel-title { padding: 14px 16px; font-weight: 700; color: #fff; border-bottom: 1px solid #26272b; }
 
 /* Telas assistidas — uma live por tela, centralizada; rola para a próxima (scroll-snap) */
 .screens { background: #1e1f22; overflow-y: auto; }
 
 /* Live aberta: chat sai de cena, lives ocupam o canal inteiro */
-.content.live-mode .messages, .content.live-mode .chat-form, .content.live-mode #typing-line { display: none; }
+.content.live-mode .messages, .content.live-mode .chat-form, .content.live-mode #typing-line, .content.live-mode #emoji-panel { display: none; }
 /* chat-open: clicou em #geral — mostra o chat de volta e esconde as lives (tag "voltar" reaparece) */
 .content.live-mode.chat-open .messages { display: flex; }
 .content.live-mode.chat-open .chat-form { display: flex; }
@@ -185,6 +185,21 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 /* Foco sutil no lugar do outline padrão do navegador (anel branco grosso) */
 .chat-form input:focus { outline: none; box-shadow: 0 0 0 1px rgba(88, 101, 242, .45); background: #3c3e45; }
 .chat-form button { padding: 0 18px; border: none; border-radius: 8px; background: #5865f2; color: #fff; font-weight: 600; cursor: pointer; }
+#emoji-btn { padding: 0 12px; background: #383a40; color: #b5bac1; }
+#emoji-btn:hover { color: #f0b232; }
+
+/* Emojis nas mensagens: memes inline; "jumbo" quando a mensagem é só memes */
+.message .text .emoji { width: 22px; height: 22px; object-fit: contain; vertical-align: -5px; margin: 0 1px; }
+.message .text.jumbo .emoji { width: 48px; height: 48px; vertical-align: middle; }
+
+/* Painel do seletor: flutua acima do campo de mensagem */
+#emoji-panel { position: absolute; bottom: 74px; right: 16px; width: 400px; max-width: calc(100% - 32px); height: 420px; max-height: 55vh; background: #2b2d31; border: 1px solid #1e1f22; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.5); z-index: 15; display: flex; flex-direction: column; }
+#emoji-grid { flex: 1; overflow-y: auto; padding: 8px 10px 10px; }
+.emoji-cat { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: #949ba4; font-weight: 700; padding: 10px 4px 4px; }
+.emoji-row { display: flex; flex-wrap: wrap; }
+.emoji-row button { width: 40px; height: 40px; border: none; background: none; border-radius: 6px; cursor: pointer; font-size: 24px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0; }
+.emoji-row button:hover { background: #404249; }
+.emoji-row button img { width: 30px; height: 30px; object-fit: contain; }
 
 .members { width: 200px; background: #2b2d31; padding: 12px 8px; overflow-y: auto; }
 .members ul { list-style: none; }

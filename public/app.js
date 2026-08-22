@@ -427,6 +427,7 @@ $('chat-form').onsubmit = (e) => {
   if (!text) return;
   socket.emit('chat-message', { text });
   $('chat-input').value = '';
+  closeEmojiPanel();
 };
 
 // Agrupamento: mensagens seguidas do mesmo autor em <5min não repetem avatar/nome
@@ -440,9 +441,43 @@ function mentionsMe(text) {
   return !!username && new RegExp('(?<![\\w])@' + escapeRegex(username) + '(?![\\w])', 'i').test(text);
 }
 
+// Memes locais (public/emojis/): shortcode :nome: vira <img> na mensagem
+const MEMES = {
+  kekw: 'kekw.png', lolcry: 'lolcry.png', pog: 'pog.png', monkas: 'monkas.png',
+  sadge: 'sadge.png', gigachad: 'gigachad.png', pepepray: 'pepepray.gif',
+  doge: 'doge.png', cooldoge: 'cooldoge.gif', catjam: 'catjam.gif',
+  crycat: 'crycat.png', typingcat: 'typingcat.gif', meowparty: 'meowparty.gif',
+  nyancat: 'nyancat.gif', pikachu: 'pikachu.png', harold: 'harold.jpg',
+  troll: 'troll.png', stonks: 'stonks.png', thisisfine: 'thisisfine.gif',
+  dumpsterfire: 'dumpsterfire.gif', panic: 'panic.gif', alert: 'alert.gif',
+  facepalm: 'facepalm.png', blinkingguy: 'blinkingguy.gif', homer: 'homer.gif',
+  letmein: 'letmein.gif', oldmanyells: 'oldmanyells.png', takemymoney: 'takemymoney.png',
+  keanu: 'keanu.gif', micdrop: 'micdrop.gif', this: 'this.gif', rickroll: 'rickroll.gif',
+  partyparrot: 'partyparrot.gif', partyblob: 'partyblob.gif', bananadance: 'bananadance.gif',
+  sonic: 'sonic.gif',
+};
+const MEME_RE = /:([a-z0-9]+):/g;
+
+// Texto puro com :shortcode: vira texto + <img> (createElement, nunca innerHTML)
+function appendWithEmojis(el, chunk) {
+  let last = 0;
+  for (const m of chunk.matchAll(MEME_RE)) {
+    if (!MEMES[m[1]]) continue;
+    if (m.index > last) el.append(chunk.slice(last, m.index));
+    const im = document.createElement('img');
+    im.className = 'emoji';
+    im.src = 'emojis/' + MEMES[m[1]];
+    im.alt = im.title = m[0];
+    el.appendChild(im);
+    last = m.index + m[0].length;
+  }
+  if (last < chunk.length) el.append(chunk.slice(last));
+}
+
 // Links clicáveis: só createElement/append, nunca innerHTML (sem risco de XSS)
 function fillText(textDiv, text) {
   textDiv.replaceChildren();
+  textDiv.dataset.raw = text; // edição precisa do texto cru (imgs de meme não voltam a shortcode)
   text.split(/(https?:\/\/[^\s]+)/g).forEach((part, i) => {
     if (i % 2) {
       const a = document.createElement('a');
@@ -452,9 +487,12 @@ function fillText(textDiv, text) {
       a.rel = 'noopener noreferrer';
       textDiv.appendChild(a);
     } else if (part) {
-      textDiv.append(part);
+      appendWithEmojis(textDiv, part);
     }
   });
+  // Mensagem só de memes: mostra grande (como emoji sozinho no Discord)
+  textDiv.classList.toggle('jumbo',
+    !textDiv.textContent.trim() && !!textDiv.querySelector('.emoji') && textDiv.childElementCount <= 8);
 }
 
 function markEdited(div) {
@@ -541,7 +579,8 @@ function renderMessage({ id, username: author, text, ts, img, edited }) {
 // Edição inline: Enter salva, Esc ou clicar fora cancela
 function startEditMessage(div) {
   const textDiv = div.querySelector('.text');
-  const original = textDiv.textContent;
+  const original = textDiv.dataset.raw ?? textDiv.textContent;
+  textDiv.textContent = original; // memes voltam a :shortcode: para editar como texto
   try { textDiv.contentEditable = 'plaintext-only'; } catch { textDiv.contentEditable = 'true'; }
   textDiv.focus();
   const finish = (save) => {
@@ -675,6 +714,86 @@ $('chat-input').addEventListener('paste', async (e) => {
   }
   socket.emit('chat-message', { text: $('chat-input').value.trim(), img });
   $('chat-input').value = '';
+});
+
+// ---------- Seletor de emojis ----------
+// Uma grade rolável: memes primeiro, depois emojis Unicode por categoria
+const EMOJI_CATS = [
+  ['Carinhas', '😀 😃 😄 😁 😆 😅 😂 🤣 🥲 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😗 😙 😚 😋 😛 😝 😜 🤪 🤨 🧐 🤓 😎 🥸 🤩 🥳 😏 😒 😞 😔 😟 😕 🙁 ☹️ 😣 😖 😫 😩 🥺 😢 😭 😤 😠 😡 🤬 🤯 😳 🥵 🥶 😱 😨 😰 😥 😓 🤗 🤔 🫡 🤭 🤫 🤥 😶 😐 😑 😬 🙄 😯 😮 😲 🥱 😴 🤤 😪 😵 😵‍💫 🤐 🥴 🤢 🤮 🤧 😷 🤒 🤕 🤑 🤠 😈 👿 🤡 💩 👻 💀 👽 🤖 🎃 😺 😸 😹 😻 😼 😽 🙀 😿 😾'],
+  ['Gestos', '👋 🤚 ✋ 🖖 👌 🤌 🤏 ✌️ 🤞 🫰 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👍 👎 ✊ 👊 🤛 🤜 👏 🙌 🫶 👐 🤲 🤝 🙏 💪 🖕 💅 🫵'],
+  ['Corações', '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❤️‍🔥 💕 💞 💓 💗 💖 💘 💝 💯 💢 💥 💫 💦 💤'],
+  ['Bichos', '🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐔 🐧 🐦 🦆 🦅 🦉 🐺 🐗 🐴 🦄 🐝 🐛 🦋 🐌 🐞 🕷️ 🦂 🐢 🐍 🦎 🦖 🦕 🐙 🦑 🦀 🐡 🐠 🐟 🐬 🐳 🦈 🐊'],
+  ['Comida', '🍏 🍎 🍊 🍋 🍌 🍉 🍇 🍓 🍒 🍑 🥭 🍍 🥥 🥝 🍅 🍆 🥑 🥦 🌽 🥕 🍞 🥐 🧀 🥚 🍳 🥞 🥓 🥩 🍗 🌭 🍔 🍟 🍕 🥪 🌮 🌯 🥗 🍝 🍜 🍲 🍣 🍱 🍤 🍚 🍦 🍩 🍪 🎂 🍰 🧁 🍫 🍬 🍭 🍿 ☕ 🍵 🥤 🍺 🍻 🥂 🍷 🥃 🍸 🍹'],
+  ['Coisas', '⚽ 🏀 🏈 🎾 🎱 🏓 🎮 🕹️ 🎲 🎯 🎳 🎸 🎹 🥁 🎤 🎧 🎬 🎨 🚗 ✈️ 🚀 ⏰ 🔥 ✨ 🌟 ⭐ 🌈 ☀️ 🌙 ⚡ ❄️ ☔ 💰 💎 🔨 🛠️ 🔑 🔒 📱 💻 ⌨️ 📷 🔋 💡 📌 ✏️ 📚 🎁 🎈 🎉 🎊 🏆 🥇 🥈 🥉 🚩 🏁'],
+];
+
+let emojiBuilt = false;
+function buildEmojiPanel() {
+  if (emojiBuilt) return;
+  emojiBuilt = true;
+  const grid = $('emoji-grid');
+  const section = (label) => {
+    const h = document.createElement('div');
+    h.className = 'emoji-cat';
+    h.textContent = label;
+    const row = document.createElement('div');
+    row.className = 'emoji-row';
+    grid.append(h, row);
+    return row;
+  };
+  const memeRow = section('Memes');
+  for (const [name, file] of Object.entries(MEMES)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.title = ':' + name + ':';
+    b.dataset.insert = ':' + name + ':';
+    const im = document.createElement('img');
+    im.src = 'emojis/' + file;
+    im.alt = ':' + name + ':';
+    im.loading = 'lazy';
+    b.appendChild(im);
+    memeRow.appendChild(b);
+  }
+  for (const [label, chars] of EMOJI_CATS) {
+    const row = section(label);
+    for (const ch of chars.split(' ')) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = ch;
+      b.dataset.insert = ch;
+      row.appendChild(b);
+    }
+  }
+  grid.onclick = (e) => {
+    const b = e.target.closest('button[data-insert]');
+    if (!b) return;
+    const inp = $('chat-input');
+    inp.focus();
+    const s = inp.selectionStart ?? inp.value.length;
+    inp.setRangeText(b.dataset.insert, s, inp.selectionEnd ?? s, 'end');
+  };
+}
+
+function closeEmojiPanel() { $('emoji-panel').classList.add('hidden'); }
+
+$('emoji-btn').onclick = () => {
+  const panel = $('emoji-panel');
+  const opening = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden');
+  if (opening) {
+    buildEmojiPanel();
+    fxIn(panel, { y: 8, duration: 0.18 });
+    $('chat-input').focus();
+  }
+};
+
+// Fecha ao clicar fora ou apertar Esc
+document.addEventListener('click', (e) => {
+  if (!$('emoji-panel').classList.contains('hidden')
+    && !e.target.closest('#emoji-panel') && !e.target.closest('#emoji-btn')) closeEmojiPanel();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeEmojiPanel();
 });
 
 // ---------- "Fulano está digitando…" ----------
