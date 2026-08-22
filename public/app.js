@@ -349,7 +349,8 @@ function showServerTip(serverId, el) {
     renderServerTip(res);
     const wasHidden = tip.classList.contains('hidden');
     tip.classList.remove('hidden');
-    if (wasHidden) fxIn(tip, { y: 0, x: -6, duration: 0.18 }); // deslizar entre ícones não re-anima
+    // clearProps só do que animou: 'all' apagaria o left/top inline e o tooltip sumia ao fim da animação
+    if (wasHidden) fxIn(tip, { y: 0, x: -6, duration: 0.18, clearProps: 'opacity,transform' }); // deslizar entre ícones não re-anima
   });
 }
 function scheduleServerTipHide() {
