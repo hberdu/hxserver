@@ -1797,6 +1797,7 @@ async function toggleScreen() {
       surfaceSwitching: 'include',    // trocar de janela sem parar a live
       selfBrowserSurface: 'exclude',  // evita efeito túnel capturando a própria aba
       monitorTypeSurfaces: 'include',
+      windowAudio: 'window',          // janela/app: só o som daquele app (padrão no Windows era o sistema inteiro)
     });
   } catch { return; } // usuário cancelou o seletor
   finally { screenPending = false; }
