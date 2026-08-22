@@ -86,10 +86,11 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .screens { background: #1e1f22; overflow-y: auto; }
 
 /* Live aberta: chat sai de cena, lives ocupam o canal inteiro */
-.content.live-mode .messages, .content.live-mode .chat-form, .content.live-mode #typing-line, .content.live-mode #emoji-panel { display: none; }
+.content.live-mode .messages, .content.live-mode .chat-form, .content.live-mode .reply-bar, .content.live-mode #typing-line, .content.live-mode #emoji-panel { display: none; }
 /* chat-open: clicou em #geral — mostra o chat de volta e esconde as lives (tag "voltar" reaparece) */
 .content.live-mode.chat-open .messages { display: flex; }
 .content.live-mode.chat-open .chat-form { display: flex; }
+.content.live-mode.chat-open .reply-bar:not(.hidden) { display: flex; }
 .content.live-mode.chat-open #typing-line { display: block; }
 .content.live-mode.chat-open .screens { display: none; }
 /* Grid em degraus de zoom: 1 coluna (live centralizada), 2x2 (até 4) e 3x3 (até 9).
@@ -322,3 +323,19 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
   .sidebar { position: fixed; top: 0; bottom: 0; left: 0; z-index: 20; transform: translateX(-100%); transition: transform .2s; box-shadow: 2px 0 12px rgba(0,0,0,.4); }
   .sidebar.open { transform: translateX(0); }
 }
+
+/* Responder: barra acima do input + citação no topo da mensagem */
+.reply-bar { display: flex; align-items: center; gap: 6px; margin: 0 16px 4px; padding: 6px 12px; border-radius: 8px 8px 0 0; background: #2b2d31; color: #949ba4; font-size: 13px; }
+.reply-bar.hidden { display: none; }
+.reply-bar b { color: #dbdee1; }
+.reply-bar button { margin-left: auto; border: none; background: none; color: #b5bac1; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+.reply-bar button:hover { color: #fff; background: #404249; }
+.reply-bar .icon { width: 14px; height: 14px; }
+.reply-ref { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #949ba4; cursor: pointer; max-width: 100%; }
+.reply-ref:hover .snippet { color: #dbdee1; }
+.reply-ref .author { color: #dbdee1; font-weight: 600; flex-shrink: 0; }
+.reply-ref .snippet { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.reply-ref .snippet .emoji { width: 16px; height: 16px; vertical-align: -3px; }
+.reply-ref .icon { width: 14px; height: 14px; flex-shrink: 0; }
+.message.flash { animation: flash 1.5s ease-out; }
+@keyframes flash { from { background: rgba(88, 101, 242, .3); } to { background: transparent; } }

@@ -142,11 +142,18 @@ db.exec(`CREATE TABLE IF NOT EXISTS messages (
 try { db.exec('ALTER TABLE messages ADD COLUMN img TEXT'); } catch { /* coluna já existe */ }
 try { db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER'); } catch { /* coluna já existe */ }
 try { db.exec("ALTER TABLE messages ADD COLUMN server TEXT NOT NULL DEFAULT 'hx'"); } catch { /* coluna já existe */ }
-const insertMsg = db.prepare('INSERT INTO messages (username, text, ts, img, server) VALUES (?, ?, ?, ?, ?)');
+try { db.exec('ALTER TABLE messages ADD COLUMN reply_to INTEGER'); } catch { /* coluna já existe */ }
+const insertMsg = db.prepare('INSERT INTO messages (username, text, ts, img, server, reply_to) VALUES (?, ?, ?, ?, ?, ?)');
 // Trim por servidor: cada servidor mantém as próprias 100 mensagens
 const trimMsgs = db.prepare('DELETE FROM messages WHERE server = ? AND id <= (SELECT MAX(id) FROM messages WHERE server = ?) - ?');
-const historyFor = db.prepare(`SELECT id, username, text, ts, img, edited FROM
-  (SELECT * FROM messages WHERE server = ? ORDER BY id DESC LIMIT 100) ORDER BY id ASC`);
+// Resposta: a mensagem citada vem por JOIN (rename/edição refletem; apagada vira reply só com id)
+const historyRows = db.prepare(`SELECT m.id, m.username, m.text, m.ts, m.img, m.edited, m.reply_to, r.username AS r_user, r.text AS r_text FROM
+  (SELECT * FROM messages WHERE server = ? ORDER BY id DESC LIMIT 100) m LEFT JOIN messages r ON r.id = m.reply_to ORDER BY m.id ASC`);
+const replyTarget = db.prepare('SELECT id, username, text FROM messages WHERE id = ? AND server = ?');
+const REPLY_SNIPPET = 120;
+const replyOf = (id, username, text) => (username == null ? { id } : { id, username, text: text.slice(0, REPLY_SNIPPET) });
+const historyFor = { all: (sv) => historyRows.all(sv).map(({ reply_to, r_user, r_text, ...m }) =>
+  (reply_to == null ? m : { ...m, reply: replyOf(reply_to, r_user, r_text) })) };
 const updateMsg = db.prepare('UPDATE messages SET text = ?, edited = 1 WHERE id = ? AND username = ?');
 const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ? AND username = ?');
 const renameMsgs = db.prepare('UPDATE messages SET username = ? WHERE username = ?');
@@ -613,7 +620,10 @@ io.on('connection', (socket) => {
     username = name;
     state.users.set(socket.id, username);
     // Nome antigo nas mensagens em memória (de todos os servidores) acompanha o rename
-    for (const arr of Object.values(state.messages)) for (const m of arr) if (m.username === oldName) m.username = name;
+    for (const arr of Object.values(state.messages)) for (const m of arr) {
+      if (m.username === oldName) m.username = name;
+      if (m.reply?.username === oldName) m.reply.username = name;
+    }
     ack({ ok: true, username });
     socket.to('all').emit('user-renamed', { id: socket.id, oldName, newName: name }); // nome é global
   });
@@ -626,10 +636,13 @@ io.on('connection', (socket) => {
     if (hasImg && !validImage(img, MAX_THUMB)) return;
     if ((!text && !hasImg) || text.length > MAX_MSG) return;
     const sv = curServer();
+    // Só responde mensagem que existe neste servidor; alvo inválido vira mensagem comum
+    const target = Number.isInteger(payload.replyTo) ? replyTarget.get(payload.replyTo, sv) : null;
     const ts = Date.now();
-    const info = insertMsg.run(username, text, ts, hasImg ? img : null, sv);
+    const info = insertMsg.run(username, text, ts, hasImg ? img : null, sv, target ? target.id : null);
     const msg = { id: Number(info.lastInsertRowid), username, text, ts };
     if (hasImg) msg.img = img;
+    if (target) msg.reply = replyOf(target.id, target.username, target.text);
     const arr = state.messages[sv];
     arr.push(msg);
     if (arr.length > MAX_HISTORY) arr.shift();
@@ -655,7 +668,10 @@ io.on('connection', (socket) => {
     if (!Number.isInteger(id) || !text || text.length > MAX_MSG) return ack({ error: 'Mensagem inválida.' });
     if (updateMsg.run(text, id, username).changes === 0) return ack({ error: 'Só dá para editar as próprias mensagens.' });
     const found = findMsg(id);
-    if (found) { found.m.text = text; found.m.edited = 1; }
+    if (found) {
+      found.m.text = text; found.m.edited = 1;
+      for (const m of state.messages[found.sv]) if (m.reply?.id === id && m.reply.username) m.reply.text = text.slice(0, REPLY_SNIPPET);
+    }
     ack({ ok: true });
     io.to(srvRoom(found ? found.sv : curServer())).emit('message-edited', { id, text });
   });
@@ -667,7 +683,10 @@ io.on('connection', (socket) => {
     if (!Number.isInteger(id)) return ack({ error: 'Mensagem inválida.' });
     if (deleteMsg.run(id, username).changes === 0) return ack({ error: 'Só dá para apagar as próprias mensagens.' });
     const found = findMsg(id);
-    if (found) state.messages[found.sv] = state.messages[found.sv].filter((x) => x.id !== id);
+    if (found) {
+      state.messages[found.sv] = state.messages[found.sv].filter((x) => x.id !== id);
+      for (const m of state.messages[found.sv]) if (m.reply?.id === id) m.reply = { id }; // citação some como no JOIN
+    }
     ack({ ok: true });
     io.to(srvRoom(found ? found.sv : curServer())).emit('message-deleted', { id });
   });

@@ -922,3 +922,33 @@ test('payloads null/malformados não derrubam o servidor', async () => {
   const rb = await emitAck(b, 'register', { username: 'beto', password: 'senha123' });
   assert.equal(rb.ok, true, 'servidor continua respondendo');
 });
+
+test('responder: reply carrega autor/trecho da citada; histórico faz JOIN; apagada vira reply só com id', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+
+  const got = once(b, 'chat-message');
+  a.emit('chat-message', { text: 'pergunta' });
+  const orig = await got;
+
+  const gotReply = once(a, 'chat-message');
+  b.emit('chat-message', { text: 'resposta', replyTo: orig.id });
+  const rep = await gotReply;
+  assert.deepEqual(rep.reply, { id: orig.id, username: 'ana', text: 'pergunta' });
+
+  // replyTo inválido (id inexistente / tipo errado) vira mensagem comum
+  const gotPlain = once(a, 'chat-message');
+  b.emit('chat-message', { text: 'solta', replyTo: 'x' });
+  assert.equal((await gotPlain).reply, undefined);
+
+  // Quem chega depois recebe o reply no histórico (JOIN)
+  const c = await connect();
+  const rc = await emitAck(c, 'register', { username: 'carla', password: 'senha123' });
+  assert.deepEqual(rc.messages[1].reply, { id: orig.id, username: 'ana', text: 'pergunta' });
+
+  // Original apagada: histórico ainda referencia, sem autor
+  await emitAck(a, 'delete-message', { id: orig.id });
+  const d = await connect();
+  const rd = await emitAck(d, 'register', { username: 'dani', password: 'senha123' });
+  assert.deepEqual(rd.messages[0].reply, { id: orig.id });
+});

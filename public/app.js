@@ -421,12 +421,28 @@ function auth(event) {
 
 
 // ---------- Chat ----------
+// Responder: id da mensagem citada vai junto no próximo envio; barra acima do input mostra quem
+let replyTo = null;
+function setReply(id, author) {
+  replyTo = id;
+  $('reply-bar').classList.toggle('hidden', id == null);
+  if (id != null) { $('reply-author').textContent = author; $('chat-input').focus(); }
+}
+$('reply-cancel').onclick = () => setReply(null);
+$('chat-input').addEventListener('keydown', (e) => { if (e.key === 'Escape' && replyTo != null) setReply(null); });
+
+function sendMessage(payload) {
+  if (replyTo != null) payload.replyTo = replyTo;
+  socket.emit('chat-message', payload);
+  $('chat-input').value = '';
+  setReply(null);
+}
+
 $('chat-form').onsubmit = (e) => {
   e.preventDefault();
   const text = $('chat-input').value.trim();
   if (!text) return;
-  socket.emit('chat-message', { text });
-  $('chat-input').value = '';
+  sendMessage({ text });
   closeEmojiPanel();
 };
 
@@ -503,15 +519,46 @@ function markEdited(div) {
   div.querySelector('.text').after(tag);
 }
 
-function renderMessage({ id, username: author, text, ts, img, edited }) {
-  const compact = author === lastAuthor && ts - lastTs < 5 * 60 * 1000;
+// Citação acima de uma resposta: "↩ autor  trecho"; clique rola até a original (se ainda estiver no DOM)
+function replyRef(reply) {
+  const ref = document.createElement('div');
+  ref.className = 'reply-ref';
+  ref.dataset.to = reply.id;
+  ref.innerHTML = '<svg class="icon"><use href="#i-reply"/></svg>';
+  if (reply.username == null) {
+    const i = document.createElement('i');
+    i.className = 'deleted';
+    i.textContent = 'mensagem apagada';
+    ref.appendChild(i);
+    return ref;
+  }
+  const who = document.createElement('span');
+  who.className = 'author';
+  who.textContent = reply.username;
+  const snippet = document.createElement('span');
+  snippet.className = 'snippet';
+  appendWithEmojis(snippet, reply.text || 'imagem');
+  ref.append(who, snippet);
+  ref.onclick = () => {
+    const orig = document.querySelector('.message[data-id="' + Number(reply.id) + '"]');
+    if (!orig) return;
+    orig.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    orig.classList.remove('flash');
+    void orig.offsetWidth; // reinicia a animação se clicar de novo
+    orig.classList.add('flash');
+  };
+  return ref;
+}
+
+function renderMessage({ id, username: author, text, ts, img, edited, reply }) {
+  const compact = !reply && author === lastAuthor && ts - lastTs < 5 * 60 * 1000; // resposta sempre com cabeçalho
   lastAuthor = author;
   lastTs = ts;
   const div = document.createElement('div');
   div.className = compact ? 'message compact' : 'message';
   if (id != null) div.dataset.id = id;
   div.dataset.author = author;
-  if (mentionsMe(text) && author !== username) div.classList.add('mention');
+  if (author !== username && (mentionsMe(text) || reply?.username === username)) div.classList.add('mention');
 
   const textDiv = document.createElement('div');
   textDiv.className = 'text';
@@ -536,6 +583,7 @@ function renderMessage({ id, username: author, text, ts, img, edited }) {
     meta.append(authorSpan, timeSpan);
     holder = document.createElement('div');
     holder.className = 'body';
+    if (reply) holder.append(replyRef(reply));
     holder.append(meta);
     div.append(avatarEl(author, 36), holder);
   } else {
@@ -558,11 +606,12 @@ function renderMessage({ id, username: author, text, ts, img, edited }) {
     holder.appendChild(im);
   }
 
-  // Ações (editar/apagar) só nas próprias mensagens
-  if (author === username && id != null) {
+  // Ações: responder em qualquer mensagem; editar/apagar só nas próprias
+  if (id != null) {
     const actions = document.createElement('span');
     actions.className = 'msg-actions';
-    actions.append(
+    actions.append(tileButton('reply', 'Responder', () => setReply(id, author)));
+    if (author === username) actions.append(
       tileButton('edit', 'Editar mensagem', () => startEditMessage(div)),
       tileButton('trash', 'Apagar mensagem', () => {
         if (!confirm('Apagar esta mensagem?')) return;
@@ -609,6 +658,8 @@ socket.on('message-edited', ({ id, text } = {}) => {
   fillText(div.querySelector('.text'), text);
   div.classList.toggle('mention', div.dataset.author !== username && mentionsMe(text));
   markEdited(div);
+  // Citações desta mensagem em outras respostas seguem o texto novo
+  document.querySelectorAll('.reply-ref[data-to="' + Number(id) + '"] .snippet').forEach((s) => { s.replaceChildren(); appendWithEmojis(s, text.slice(0, 120)); });
 });
 
 socket.on('message-deleted', ({ id } = {}) => {
@@ -624,6 +675,7 @@ socket.on('message-deleted', ({ id } = {}) => {
   div.querySelector('.chat-img')?.remove();
   div.querySelector('.edited')?.remove();
   div.querySelector('.msg-actions')?.remove();
+  document.querySelectorAll('.reply-ref[data-to="' + Number(id) + '"]').forEach((r) => r.replaceWith(replyRef({ id })));
 });
 
 function systemMessage(text) {
@@ -670,7 +722,7 @@ socket.on('chat-message', (msg) => {
   fxIn($('messages').lastElementChild); // só mensagem ao vivo anima; histórico entra pronto
   if (stick) { scrollMessages(); trimMessages(); }
   clearTyping(msg.username); // a mensagem chegou: some o "está digitando"
-  const mentioned = msg.username !== username && mentionsMe(msg.text);
+  const mentioned = msg.username !== username && (mentionsMe(msg.text) || msg.reply?.username === username);
   if (document.hidden && msg.username !== username) {
     unread++;
     document.title = '(' + unread + ') HX Chat';
@@ -712,8 +764,7 @@ $('chat-input').addEventListener('paste', async (e) => {
     systemMessage('Não consegui ler essa imagem.');
     return;
   }
-  socket.emit('chat-message', { text: $('chat-input').value.trim(), img });
-  $('chat-input').value = '';
+  sendMessage({ text: $('chat-input').value.trim(), img });
 });
 
 // ---------- Seletor de emojis ----------
