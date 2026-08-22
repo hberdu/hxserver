@@ -768,36 +768,41 @@ $('chat-input').addEventListener('paste', async (e) => {
 });
 
 // ---------- Seletor de emojis ----------
-// Uma grade rolável: memes primeiro, depois emojis Unicode por categoria
-const EMOJI_CATS = [
-  ['Carinhas', '😀 😃 😄 😁 😆 😅 😂 🤣 🥲 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😗 😙 😚 😋 😛 😝 😜 🤪 🤨 🧐 🤓 😎 🥸 🤩 🥳 😏 😒 😞 😔 😟 😕 🙁 ☹️ 😣 😖 😫 😩 🥺 😢 😭 😤 😠 😡 🤬 🤯 😳 🥵 🥶 😱 😨 😰 😥 😓 🤗 🤔 🫡 🤭 🤫 🤥 😶 😐 😑 😬 🙄 😯 😮 😲 🥱 😴 🤤 😪 😵 😵‍💫 🤐 🥴 🤢 🤮 🤧 😷 🤒 🤕 🤑 🤠 😈 👿 🤡 💩 👻 💀 👽 🤖 🎃 😺 😸 😹 😻 😼 😽 🙀 😿 😾'],
-  ['Gestos', '👋 🤚 ✋ 🖖 👌 🤌 🤏 ✌️ 🤞 🫰 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👍 👎 ✊ 👊 🤛 🤜 👏 🙌 🫶 👐 🤲 🤝 🙏 💪 🖕 💅 🫵'],
-  ['Corações', '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❤️‍🔥 💕 💞 💓 💗 💖 💘 💝 💯 💢 💥 💫 💦 💤'],
-  ['Bichos', '🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐔 🐧 🐦 🦆 🦅 🦉 🐺 🐗 🐴 🦄 🐝 🐛 🦋 🐌 🐞 🕷️ 🦂 🐢 🐍 🦎 🦖 🦕 🐙 🦑 🦀 🐡 🐠 🐟 🐬 🐳 🦈 🐊'],
-  ['Comida', '🍏 🍎 🍊 🍋 🍌 🍉 🍇 🍓 🍒 🍑 🥭 🍍 🥥 🥝 🍅 🍆 🥑 🥦 🌽 🥕 🍞 🥐 🧀 🥚 🍳 🥞 🥓 🥩 🍗 🌭 🍔 🍟 🍕 🥪 🌮 🌯 🥗 🍝 🍜 🍲 🍣 🍱 🍤 🍚 🍦 🍩 🍪 🎂 🍰 🧁 🍫 🍬 🍭 🍿 ☕ 🍵 🥤 🍺 🍻 🥂 🍷 🥃 🍸 🍹'],
-  ['Coisas', '⚽ 🏀 🏈 🎾 🎱 🏓 🎮 🕹️ 🎲 🎯 🎳 🎸 🎹 🥁 🎤 🎧 🎬 🎨 🚗 ✈️ 🚀 ⏰ 🔥 ✨ 🌟 ⭐ 🌈 ☀️ 🌙 ⚡ ❄️ ☔ 💰 💎 🔨 🛠️ 🔑 🔒 📱 💻 ⌨️ 📷 🔋 💡 📌 ✏️ 📚 🎁 🎈 🎉 🎊 🏆 🥇 🥈 🥉 🚩 🏁'],
+// Como no Slack: busca por nome, abas por categoria e catálogo Unicode completo (vendor/emoji.json,
+// gerado por scripts/make-emoji.js). Memes vêm primeiro.
+const EMOJI_GROUPS = [
+  ['Carinhas', '😀'], ['Pessoas', '👋'], ['Bichos e natureza', '🐻'], ['Comida', '🍔'], ['Viagem', '✈️'],
+  ['Atividades', '⚽'], ['Objetos', '💡'], ['Símbolos', '🔣'], ['Bandeiras', '🏁'],
 ];
 
 let emojiBuilt = false;
-function buildEmojiPanel() {
+async function buildEmojiPanel() {
   if (emojiBuilt) return;
   emojiBuilt = true;
   const grid = $('emoji-grid');
-  const section = (label) => {
+  const tabs = $('emoji-tabs');
+  const section = (label, tabIcon) => {
     const h = document.createElement('div');
     h.className = 'emoji-cat';
     h.textContent = label;
     const row = document.createElement('div');
     row.className = 'emoji-row';
     grid.append(h, row);
+    const t = document.createElement('button');
+    t.type = 'button';
+    t.title = label;
+    t.textContent = tabIcon;
+    t.onclick = () => { $('emoji-search').value = ''; filterEmojis(''); h.scrollIntoView({ block: 'start' }); };
+    tabs.appendChild(t);
     return row;
   };
-  const memeRow = section('Memes');
+  const memeRow = section('Memes', '🎭');
   for (const [name, file] of Object.entries(MEMES)) {
     const b = document.createElement('button');
     b.type = 'button';
     b.title = ':' + name + ':';
     b.dataset.insert = ':' + name + ':';
+    b.dataset.n = name;
     const im = document.createElement('img');
     im.src = 'emojis/' + file;
     im.alt = ':' + name + ':';
@@ -805,15 +810,17 @@ function buildEmojiPanel() {
     b.appendChild(im);
     memeRow.appendChild(b);
   }
-  for (const [label, chars] of EMOJI_CATS) {
-    const row = section(label);
-    for (const ch of chars.split(' ')) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = ch;
-      b.dataset.insert = ch;
-      row.appendChild(b);
-    }
+  let list = [];
+  try { list = await (await fetch('vendor/emoji.json')).json(); } catch { /* offline sem cache: só memes */ }
+  const rows = EMOJI_GROUPS.map(([label, icon]) => section(label, icon));
+  for (const [g, ch, name] of list) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = ch;
+    b.title = name;
+    b.dataset.insert = ch;
+    b.dataset.n = name;
+    rows[g].appendChild(b);
   }
   grid.onclick = (e) => {
     const b = e.target.closest('button[data-insert]');
@@ -825,6 +832,21 @@ function buildEmojiPanel() {
   };
 }
 
+// Busca: esconde botões que não casam e os títulos de categoria; linha vazia colapsa sozinha
+function filterEmojis(q) {
+  q = q.trim().toLowerCase();
+  const grid = $('emoji-grid');
+  grid.classList.toggle('searching', !!q);
+  for (const b of grid.querySelectorAll('button[data-n]')) b.hidden = !!q && !b.dataset.n.includes(q);
+}
+$('emoji-search').oninput = (e) => filterEmojis(e.target.value);
+$('emoji-search').onkeydown = (e) => {
+  if (e.key === 'Enter') { // Enter na busca insere o primeiro resultado
+    e.preventDefault();
+    $('emoji-grid').querySelector('button[data-insert]:not([hidden])')?.click();
+  }
+};
+
 function closeEmojiPanel() { $('emoji-panel').classList.add('hidden'); }
 
 $('emoji-btn').onclick = () => {
@@ -833,8 +855,8 @@ $('emoji-btn').onclick = () => {
   panel.classList.toggle('hidden');
   if (opening) {
     buildEmojiPanel();
-    fxIn(panel, { y: 8, duration: 0.18 });
-    $('chat-input').focus();
+    $('emoji-search').value = ''; filterEmojis('');
+    $('emoji-search').focus();
   }
 };
 

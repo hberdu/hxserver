@@ -1,7 +1,7 @@
 // Service worker: código vai à rede primeiro (deploy chega na hora); cache cobre o offline.
 // Estáticos raros (ícones/manifest) ficam em stale-while-revalidate.
-const CACHE = 'hx-v18'; // v18: responder mensagens
-const ASSETS = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/socket.io/socket.io.js', '/vendor/gsap.min.js', '/vendor/mediasoup-client.min.js', '/icons/icon-192.png', '/icons/icon-512.png'];
+const CACHE = 'hx-v19'; // v19: responder mensagens + catálogo de emojis
+const ASSETS = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/socket.io/socket.io.js', '/vendor/gsap.min.js', '/vendor/mediasoup-client.min.js', '/vendor/emoji.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 const NETWORK_FIRST = ['/', '/index.html', '/app.js', '/style.css', '/socket.io/socket.io.js'];
 
 self.addEventListener('install', (e) => {
