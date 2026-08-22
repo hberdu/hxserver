@@ -550,7 +550,54 @@ function replyRef(reply) {
   return ref;
 }
 
-function renderMessage({ id, username: author, text, ts, img, edited, reply }) {
+// Reações: pills "emoji  N" embaixo da mensagem; a minha fica destacada; clique alterna
+function reactionPill(id, emoji, users) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'reaction' + (users.includes(username) ? ' mine' : '');
+  b.dataset.emoji = emoji;
+  const face = document.createElement('span');
+  face.className = 'face';
+  appendWithEmojis(face, emoji);
+  const n = document.createElement('span');
+  n.className = 'count';
+  n.textContent = users.length;
+  b.append(face, n);
+  b.title = users.join(', ') + (users.length > 1 ? ' reagiram' : ' reagiu') + ' com ' + emoji;
+  b.onclick = () => react(id, emoji);
+  return b;
+}
+
+function react(id, emoji) {
+  socket.emit('react', { id, emoji }, (res) => {
+    if (!res || res.error) systemMessage((res && res.error) || 'Falha ao reagir.');
+  });
+}
+
+function renderReactions(div, id, reactions) {
+  let row = div.querySelector('.reactions');
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'reactions';
+    (div.querySelector('.body') || div).appendChild(row);
+  }
+  row.replaceChildren(...Object.entries(reactions).map(([emoji, users]) => reactionPill(id, emoji, users)));
+  if (!row.childElementCount) row.remove();
+}
+
+socket.on('message-reacted', ({ id, emoji, users } = {}) => {
+  const div = document.querySelector('.message[data-id="' + Number(id) + '"]');
+  if (!div || typeof emoji !== 'string' || !Array.isArray(users)) return;
+  const row = div.querySelector('.reactions');
+  const old = row?.querySelector('.reaction[data-emoji="' + CSS.escape(emoji) + '"]');
+  if (!users.length) { old?.remove(); if (row && !row.childElementCount) row.remove(); return; }
+  const pill = reactionPill(Number(id), emoji, users);
+  if (old) old.replaceWith(pill);
+  else if (row) { row.appendChild(pill); fxIn(pill, { duration: 0.15 }); }
+  else renderReactions(div, Number(id), { [emoji]: users });
+});
+
+function renderMessage({ id, username: author, text, ts, img, edited, reply, reactions }) {
   const compact = !reply && author === lastAuthor && ts - lastTs < 5 * 60 * 1000; // resposta sempre com cabeçalho
   lastAuthor = author;
   lastTs = ts;
@@ -606,11 +653,15 @@ function renderMessage({ id, username: author, text, ts, img, edited, reply }) {
     holder.appendChild(im);
   }
 
-  // Ações: responder em qualquer mensagem; editar/apagar só nas próprias
+  // Ações: reagir/responder em qualquer mensagem; editar/apagar só nas próprias
+  if (reactions) renderReactions(div, id, reactions);
   if (id != null) {
     const actions = document.createElement('span');
     actions.className = 'msg-actions';
-    actions.append(tileButton('reply', 'Responder', () => setReply(id, author)));
+    actions.append(
+      tileButton('react', 'Reagir', () => openEmojiPanel(id)),
+      tileButton('reply', 'Responder', () => setReply(id, author))
+    );
     if (author === username) actions.append(
       tileButton('edit', 'Editar mensagem', () => startEditMessage(div)),
       tileButton('trash', 'Apagar mensagem', () => {
@@ -675,6 +726,7 @@ socket.on('message-deleted', ({ id } = {}) => {
   div.querySelector('.chat-img')?.remove();
   div.querySelector('.edited')?.remove();
   div.querySelector('.msg-actions')?.remove();
+  div.querySelector('.reactions')?.remove();
   document.querySelectorAll('.reply-ref[data-to="' + Number(id) + '"]').forEach((r) => r.replaceWith(replyRef({ id })));
 });
 
@@ -825,6 +877,7 @@ async function buildEmojiPanel() {
   grid.onclick = (e) => {
     const b = e.target.closest('button[data-insert]');
     if (!b) return;
+    if (reactTarget != null) { react(reactTarget, b.dataset.insert); closeEmojiPanel(); return; }
     const inp = $('chat-input');
     inp.focus();
     const s = inp.selectionStart ?? inp.value.length;
@@ -847,17 +900,25 @@ $('emoji-search').onkeydown = (e) => {
   }
 };
 
-function closeEmojiPanel() { $('emoji-panel').classList.add('hidden'); }
+// reactTarget: id da mensagem quando o painel foi aberto pelo botão "Reagir" (clique reage em vez de inserir)
+let reactTarget = null;
+function closeEmojiPanel() { $('emoji-panel').classList.add('hidden'); reactTarget = null; }
+
+function openEmojiPanel(reactId = null) {
+  const panel = $('emoji-panel');
+  const wasOpen = !panel.classList.contains('hidden');
+  reactTarget = reactId;
+  $('emoji-search').placeholder = reactId != null ? 'Reagir com…' : 'Buscar emoji (em inglês: cat, fire, heart…)';
+  if (wasOpen) return;
+  panel.classList.remove('hidden');
+  buildEmojiPanel();
+  $('emoji-search').value = ''; filterEmojis('');
+  $('emoji-search').focus();
+  fxIn(panel, { y: 8, duration: 0.18 });
+}
 
 $('emoji-btn').onclick = () => {
-  const panel = $('emoji-panel');
-  const opening = panel.classList.contains('hidden');
-  panel.classList.toggle('hidden');
-  if (opening) {
-    buildEmojiPanel();
-    $('emoji-search').value = ''; filterEmojis('');
-    $('emoji-search').focus();
-  }
+  if ($('emoji-panel').classList.contains('hidden')) openEmojiPanel(); else closeEmojiPanel();
 };
 
 // Fecha ao clicar fora ou apertar Esc

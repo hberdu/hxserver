@@ -952,3 +952,36 @@ test('responder: reply carrega autor/trecho da citada; histórico faz JOIN; apag
   const rd = await emitAck(d, 'register', { username: 'dani', password: 'senha123' });
   assert.deepEqual(rd.messages[0].reply, { id: orig.id });
 });
+
+test('reações: toggle por usuário, broadcast com lista, histórico carrega, apagar mensagem limpa', async () => {
+  const a = await loggedClient('ana');
+  const b = await loggedClient('beto');
+  const got = once(b, 'chat-message');
+  a.emit('chat-message', { text: 'reaja' });
+  const msg = await got;
+
+  let ev = once(b, 'message-reacted');
+  assert.equal((await emitAck(a, 'react', { id: msg.id, emoji: '👍' })).ok, true);
+  assert.deepEqual(await ev, { id: msg.id, emoji: '👍', users: ['ana'] });
+
+  ev = once(a, 'message-reacted');
+  await emitAck(b, 'react', { id: msg.id, emoji: '👍' });
+  assert.deepEqual((await ev).users, ['ana', 'beto']);
+  await emitAck(b, 'react', { id: msg.id, emoji: ':kekw:' });
+
+  // Quem chega vê reactions no histórico (memória) e após restart (banco)
+  const c = await connect();
+  const rc = await emitAck(c, 'register', { username: 'carla', password: 'senha123' });
+  assert.deepEqual(rc.messages[0].reactions, { '👍': ['ana', 'beto'], ':kekw:': ['beto'] });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM reactions').get().n, 3);
+
+  // Toggle de novo remove; último a sair apaga o emoji
+  ev = once(b, 'message-reacted');
+  await emitAck(a, 'react', { id: msg.id, emoji: '👍' });
+  assert.deepEqual((await ev).users, ['beto']);
+  assert.deepEqual((await emitAck(a, 'react', { id: msg.id, emoji: 'tem espaço' })).error, 'Reação inválida.');
+  assert.deepEqual((await emitAck(a, 'react', { id: 9999, emoji: '👍' })).error, 'Mensagem não encontrada.');
+
+  await emitAck(a, 'delete-message', { id: msg.id });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM reactions').get().n, 0);
+});

@@ -157,6 +157,32 @@ const historyFor = { all: (sv) => historyRows.all(sv).map(({ reply_to, r_user, r
 const updateMsg = db.prepare('UPDATE messages SET text = ?, edited = 1 WHERE id = ? AND username = ?');
 const deleteMsg = db.prepare('DELETE FROM messages WHERE id = ? AND username = ?');
 const renameMsgs = db.prepare('UPDATE messages SET username = ? WHERE username = ?');
+
+// Reações: uma linha por (mensagem, usuário, emoji). Na memória viram msg.reactions = { emoji: [usernames] }
+db.exec(`CREATE TABLE IF NOT EXISTS reactions (
+  msg_id INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  PRIMARY KEY (msg_id, username, emoji)
+)`);
+const insertReaction = db.prepare('INSERT OR IGNORE INTO reactions (msg_id, username, emoji) VALUES (?, ?, ?)');
+const deleteReaction = db.prepare('DELETE FROM reactions WHERE msg_id = ? AND username = ? AND emoji = ?');
+const deleteMsgReactions = db.prepare('DELETE FROM reactions WHERE msg_id = ?');
+const renameReactions = db.prepare('UPDATE reactions SET username = ? WHERE username = ?');
+const orphanReactions = db.prepare('DELETE FROM reactions WHERE msg_id NOT IN (SELECT id FROM messages)');
+const reactionsFor = db.prepare('SELECT r.msg_id, r.emoji, r.username FROM reactions r JOIN messages m ON m.id = r.msg_id WHERE m.server = ? ORDER BY r.rowid');
+const MAX_REACTION = 32;          // emoji unicode (com ZWJ/variação) ou :shortcode: de meme
+const MAX_REACTIONS_PER_MSG = 20; // emojis distintos por mensagem (como no Discord)
+function loadReactions(sv, msgs) {
+  const byId = new Map(msgs.map((m) => [m.id, m]));
+  for (const { msg_id, emoji, username } of reactionsFor.all(sv)) {
+    const m = byId.get(msg_id);
+    if (!m) continue;
+    (m.reactions ||= {})[emoji] ||= [];
+    m.reactions[emoji].push(username);
+  }
+  return msgs;
+}
 const allUsernames = db.prepare('SELECT username FROM users');
 
 const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex');
@@ -256,7 +282,7 @@ const state = {
   thumbs: new Map(),   // socketId -> último thumbnail (data URL)
   watchers: new Map(), // sharerId -> Set de socketIds assistindo a live dele
 };
-for (const s of SERVERS) state.messages[s.id] = historyFor.all(s.id);
+for (const s of SERVERS) state.messages[s.id] = loadReactions(s.id, historyFor.all(s.id));
 
 // ---------- SFU (mediasoup): o servidor distribui as lives ----------
 // Transmissor sobe UMA cópia da tela para cá; o servidor replica para os espectadores (repasse de
@@ -377,7 +403,7 @@ function userList() {
 // signal custa 0.2: rajada legítima de ICE (entrar numa mesh cheia) passa; flood contínuo não.
 const RATE_COST = {
   register: 20, login: 20, resume: 5,          // scrypt caro: limita brute-force e DoS de threadpool
-  'chat-message': 2, typing: 1, 'edit-message': 2, 'delete-message': 2,
+  'chat-message': 2, typing: 1, 'edit-message': 2, 'delete-message': 2, react: 1,
   'screen-thumb': 5, 'set-avatar': 10, rename: 10, // thumb legítimo é 1 a cada 3s: folga de sobra
   signal: 0.2,
   watch: 1, unwatch: 1, 'join-voice': 1, 'leave-voice': 1,
@@ -613,6 +639,7 @@ io.on('connection', (socket) => {
       if (renameUser.run(name, username).changes === 0) return ack({ error: 'Sessão desatualizada. Recarregue a página.' });
       renameSessions.run(name, username); // sessões existentes continuam válidas
       renameMsgs.run(name, username);     // histórico segue editável e com avatar após o rename
+      renameReactions.run(name, username);
     } catch {
       return ack({ error: 'Esse nome já existe.' });
     }
@@ -623,6 +650,7 @@ io.on('connection', (socket) => {
     for (const arr of Object.values(state.messages)) for (const m of arr) {
       if (m.username === oldName) m.username = name;
       if (m.reply?.username === oldName) m.reply.username = name;
+      for (const users of Object.values(m.reactions || {})) { const i = users.indexOf(oldName); if (i >= 0) users[i] = name; }
     }
     ack({ ok: true, username });
     socket.to('all').emit('user-renamed', { id: socket.id, oldName, newName: name }); // nome é global
@@ -646,7 +674,7 @@ io.on('connection', (socket) => {
     const arr = state.messages[sv];
     arr.push(msg);
     if (arr.length > MAX_HISTORY) arr.shift();
-    trimMsgs.run(sv, sv, MAX_HISTORY);
+    if (trimMsgs.run(sv, sv, MAX_HISTORY).changes) orphanReactions.run();
     inServer().emit('chat-message', msg);
   });
 
@@ -683,12 +711,39 @@ io.on('connection', (socket) => {
     if (!Number.isInteger(id)) return ack({ error: 'Mensagem inválida.' });
     if (deleteMsg.run(id, username).changes === 0) return ack({ error: 'Só dá para apagar as próprias mensagens.' });
     const found = findMsg(id);
+    deleteMsgReactions.run(id);
     if (found) {
       state.messages[found.sv] = state.messages[found.sv].filter((x) => x.id !== id);
       for (const m of state.messages[found.sv]) if (m.reply?.id === id) m.reply = { id }; // citação some como no JOIN
     }
     ack({ ok: true });
     io.to(srvRoom(found ? found.sv : curServer())).emit('message-deleted', { id });
+  });
+
+  // Reagir: toggle do (mensagem, eu, emoji). Broadcast leva a lista completa de quem reagiu com aquele emoji
+  on('react', (payload, ack) => {
+    if (typeof ack !== 'function') return;
+    if (!loggedIn()) return ack({ error: 'Faça login primeiro.' });
+    const id = payload && payload.id;
+    const emoji = payload && typeof payload.emoji === 'string' ? payload.emoji.trim() : '';
+    if (!Number.isInteger(id) || !emoji || emoji.length > MAX_REACTION || /\s/.test(emoji)) return ack({ error: 'Reação inválida.' });
+    const found = findMsg(id);
+    if (!found) return ack({ error: 'Mensagem não encontrada.' });
+    const m = found.m;
+    m.reactions ||= {};
+    const users = m.reactions[emoji] || [];
+    if (users.includes(username)) {
+      deleteReaction.run(id, username, emoji);
+      const rest = users.filter((u) => u !== username);
+      if (rest.length) m.reactions[emoji] = rest; else delete m.reactions[emoji];
+    } else {
+      if (!users.length && Object.keys(m.reactions).length >= MAX_REACTIONS_PER_MSG) return ack({ error: 'Essa mensagem já tem reações demais.' });
+      insertReaction.run(id, username, emoji);
+      m.reactions[emoji] = [...users, username];
+    }
+    if (!Object.keys(m.reactions).length) delete m.reactions;
+    ack({ ok: true });
+    io.to(srvRoom(found.sv)).emit('message-reacted', { id, emoji, users: m.reactions?.[emoji] || [] });
   });
 
   // Trocar de servidor: recebe o retrato do novo (canal, salas de voz, mensagens, membros)

@@ -158,12 +158,14 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .content.live-mode.chat-open #back-to-live { display: inline-block; }
 
 .messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-.message { display: flex; gap: 12px; position: relative; }
+.message { display: flex; gap: 12px; position: relative; padding: 2px 16px; margin: 0 -16px; } /* margem negativa: hover ocupa a linha inteira, como no Discord */
+.message:hover { background: rgba(255, 255, 255, .04); }
+.message.mention:hover { background: rgba(240, 178, 50, .12); }
 .message.mention { background: rgba(240, 178, 50, .08); border-left: 2px solid #f0b232; border-radius: 2px; }
 .message .edited { color: #949ba4; font-size: 10px; }
 .message .deleted { color: #949ba4; }
 .message .chat-img { max-width: min(420px, 100%); max-height: 280px; border-radius: 6px; display: block; margin-top: 4px; cursor: pointer; background: #000; }
-.msg-actions { position: absolute; top: -6px; right: 8px; display: none; gap: 4px; background: #2b2d31; border-radius: 6px; padding: 2px; }
+.msg-actions { position: absolute; top: -10px; right: 16px; display: none; gap: 4px; background: #2b2d31; border-radius: 6px; padding: 2px; }
 .message:hover .msg-actions { display: flex; }
 .msg-actions button { border: none; background: none; color: #b5bac1; border-radius: 4px; cursor: pointer; padding: 3px 6px; }
 .msg-actions button:hover { color: #fff; background: #404249; }
@@ -175,7 +177,8 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .message .meta .time { color: #949ba4; font-size: 11px; }
 .message .text { font-size: 15px; word-wrap: break-word; }
 .message.system { color: #949ba4; font-size: 13px; font-style: italic; }
-.message.compact { padding-left: 48px; margin-top: -6px; } /* alinha com o texto da mensagem de cima */
+.message.compact { padding-left: 64px; margin-top: -6px; flex-wrap: wrap; } /* alinha com o texto da mensagem de cima */
+.message.compact > .text, .message.compact > .chat-img, .message.compact > .reactions { flex-basis: 100%; }
 .message .text a { color: #00a8fc; }
 .message .text a:hover { text-decoration: underline; }
 
@@ -347,3 +350,11 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 #emoji-tabs button { flex: 1; border: none; background: none; border-radius: 6px; cursor: pointer; font-size: 18px; padding: 4px 0; line-height: 1; }
 #emoji-tabs button:hover { background: #404249; }
 #emoji-grid.searching .emoji-cat { display: none; }
+
+/* Reações: pills embaixo da mensagem; a minha fica azul (como no Discord) */
+.reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.reaction { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 8px; border: 1px solid transparent; background: #2b2d31; color: #b5bac1; cursor: pointer; font-size: 14px; line-height: 1; }
+.reaction:hover { border-color: #4e5058; background: #34363c; }
+.reaction.mine { background: rgba(88, 101, 242, .15); border-color: #5865f2; color: #dbdee1; }
+.reaction .face .emoji { width: 16px; height: 16px; vertical-align: -3px; margin: 0; }
+.reaction .count { font-weight: 600; font-size: 13px; }
