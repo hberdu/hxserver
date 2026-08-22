@@ -203,6 +203,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dbdee1;
 .emoji-row { display: flex; flex-wrap: wrap; }
 .emoji-row button { width: 40px; height: 40px; border: none; background: none; border-radius: 6px; cursor: pointer; font-size: 24px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0; }
 .emoji-row button:hover { background: #404249; }
+.emoji-row button[hidden] { display: none; } /* busca: o display:flex acima vencia o hidden */
 .emoji-row button img { width: 30px; height: 30px; object-fit: contain; }
 
 .members { width: 200px; background: #2b2d31; padding: 12px 8px; overflow-y: auto; }

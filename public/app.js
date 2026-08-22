@@ -459,19 +459,37 @@ function mentionsMe(text) {
 }
 
 // Memes locais (public/emojis/): shortcode :nome: vira <img> na mensagem
-const MEMES = {
-  kekw: 'kekw.png', lolcry: 'lolcry.png', pog: 'pog.png', monkas: 'monkas.png',
-  sadge: 'sadge.png', gigachad: 'gigachad.png', pepepray: 'pepepray.gif',
-  doge: 'doge.png', cooldoge: 'cooldoge.gif', catjam: 'catjam.gif',
-  crycat: 'crycat.png', typingcat: 'typingcat.gif', meowparty: 'meowparty.gif',
-  nyancat: 'nyancat.gif', pikachu: 'pikachu.png', harold: 'harold.jpg',
-  troll: 'troll.png', stonks: 'stonks.png', thisisfine: 'thisisfine.gif',
-  dumpsterfire: 'dumpsterfire.gif', panic: 'panic.gif', alert: 'alert.gif',
-  facepalm: 'facepalm.png', blinkingguy: 'blinkingguy.gif', homer: 'homer.gif',
-  letmein: 'letmein.gif', oldmanyells: 'oldmanyells.png', takemymoney: 'takemymoney.png',
-  keanu: 'keanu.gif', micdrop: 'micdrop.gif', this: 'this.gif', rickroll: 'rickroll.gif',
-  partyparrot: 'partyparrot.gif', partyblob: 'partyblob.gif', bananadance: 'bananadance.gif',
-  sonic: 'sonic.gif',
+const MEMES = { // gerado de public/emojis (nome do arquivo = shortcode)
+  '10de10': '10de10.png',  '60fpsparrot': '60fpsparrot.gif',  'alert': 'alert.gif',  'alloshocked': 'alloshocked.gif',
+  'bananadance': 'bananadance.gif',  'beerparrot': 'beerparrot.gif',  'blinkingguy': 'blinkingguy.gif',  'blobaww': 'blobaww.png',
+  'blobclap': 'blobclap.gif',  'blobcozy': 'blobcozy.png',  'blobhearts': 'blobhearts.gif',  'blobhelp': 'blobhelp.png',
+  'blobhighfive': 'blobhighfive.png',  'blobno': 'blobno.png',  'blobsmiley': 'blobsmiley.png',  'blobthumbsup': 'blobthumbsup.png',
+  'blobwave': 'blobwave.gif',  'blobyes': 'blobyes.png',  'bobrossparrot': 'bobrossparrot.gif',  'bombasticsideeye': 'bombasticsideeye.png',
+  'brain': 'brain.gif',  'catblush': 'catblush.png',  'catconfused': 'catconfused.png',  'catjam': 'catjam.gif',
+  'chefkiss': 'chefkiss.png',  'coffindance': 'coffindance.gif',  'confuseddog': 'confuseddog.gif',  'cooldoge': 'cooldoge.gif',
+  'cowboyeyes': 'cowboyeyes.png',  'crycat': 'crycat.png',  'cryingsunglassescowboy': 'cryingsunglassescowboy.png',  'doge': 'doge.png',
+  'dumpsterfire': 'dumpsterfire.gif',  'elmofire': 'elmofire.gif',  'excuseme': 'excuseme.gif',  'facepalm': 'facepalm.png',
+  'fingerheart': 'fingerheart.png',  'fry': 'fry.png',  'ghost': 'ghost.gif',  'gigachad': 'gigachad.png',
+  'githubonfire': 'githubonfire.gif',  'harold': 'harold.jpg',  'homer': 'homer.gif',  'howdycatcowboy': 'howdycatcowboy.gif',
+  'huh': 'huh.gif',  'hyperfastparrot': 'hyperfastparrot.gif',  'jackiechanwtf': 'jackiechanwtf.png',  'keanu': 'keanu.gif',
+  'kekw': 'kekw.png',  'kirbypink': 'kirbypink.gif',  'letmein': 'letmein.gif',  'lfg': 'lfg.png',
+  'lol': 'lol.gif',  'lolcry': 'lolcry.png',  'lolsob': 'lolsob.png',  'meowadorable': 'meowadorable.png',
+  'meowattention': 'meowattention.gif',  'meowcheckmark': 'meowcheckmark.png',  'meowcode': 'meowcode.gif',  'meowcoffee': 'meowcoffee.png',
+  'meowcoffeespitting': 'meowcoffeespitting.gif',  'meowheart': 'meowheart.png',  'meowheartbongo': 'meowheartbongo.gif',  'meownoddies': 'meownoddies.gif',
+  'meowparty': 'meowparty.gif',  'meowpeek': 'meowpeek.png',  'meowpopcorn': 'meowpopcorn.gif',  'micdrop': 'micdrop.gif',
+  'minion': 'minion.png',  'monkas': 'monkas.png',  'notlikethis': 'notlikethis.png',  'nyancat': 'nyancat.gif',
+  'oldmanyells': 'oldmanyells.png',  'panic': 'panic.gif',  'partyblob': 'partyblob.gif',  'partyparrot': 'partyparrot.gif',
+  'pepeblushing': 'pepeblushing.gif',  'pepehacker': 'pepehacker.gif',  'pepehappyclap': 'pepehappyclap.gif',  'pepelaugh': 'pepelaugh.gif',
+  'pepelove': 'pepelove.png',  'pepeperfect': 'pepeperfect.png',  'pepepray': 'pepepray.gif',  'peperain': 'peperain.gif',
+  'peperich': 'peperich.gif',  'pepetumtum': 'pepetumtum.gif',  'pikachu': 'pikachu.png',  'pog': 'pog.png',
+  'programmer': 'programmer.gif',  'rage': 'rage.jpg',  'rickroll': 'rickroll.gif',  'sadcowboy': 'sadcowboy.png',
+  'sadge': 'sadge.png',  'shakingfist': 'shakingfist.gif',  'shockedpikachu': 'shockedpikachu.gif',  'sideeye': 'sideeye.png',
+  'sisyphus': 'sisyphus.png',  'smart': 'smart.gif',  'sonic': 'sonic.gif',  'spidermanpointing': 'spidermanpointing.png',
+  'spongebob': 'spongebob.gif',  'squirtlecool': 'squirtlecool.gif',  'squirtlejammin': 'squirtlejammin.gif',  'starstruckcat': 'starstruckcat.png',
+  'stonks': 'stonks.png',  'stressedcat': 'stressedcat.png',  'success': 'success.png',  'takemymoney': 'takemymoney.png',
+  'thankyou': 'thankyou.gif',  'thinkingblobintensifies': 'thinkingblobintensifies.gif',  'this': 'this.gif',  'thisisfine': 'thisisfine.gif',
+  'troll': 'troll.png',  'tumbleweed': 'tumbleweed.gif',  'typingcat': 'typingcat.gif',  'unoreverse': 'unoreverse.png',
+
 };
 const MEME_RE = /:([a-z0-9]+):/g;
 
