@@ -37,27 +37,11 @@ Instala Caddy (HTTPS automático via Let's Encrypt), clona o app em `/opt/hx`, c
 systemd `hx` (sobe no boot, reinicia se cair) e configura o proxy. Rodar de novo = atualizar.
 Outro domínio: `... | bash -s -- meudominio.com`. Logs: `journalctl -u hx -f`.
 
-### Railway ([railway.json](railway.json))
-
-1. https://railway.com → login com GitHub → **New Project → Deploy from GitHub repo** → escolha o repo
-2. No serviço: clique direito → **Attach Volume** → mount path `/data` (sem volume as contas zeram!)
-3. **Settings → Networking → Generate Domain** para a URL pública
-4. Confira em `https://SUA-URL/healthz?token=hx-metrics`: deve mostrar `"persistent":true`
-
-Preço: trial de $5 único; depois plano Hobby $5/mês. Regiões: EUA, Europa, Sudeste Asiático
-(não há região na América do Sul).
-
-### Render ([render.yaml](render.yaml))
-
-1. https://render.com: login com GitHub → **New → Blueprint** → escolha o repo → Apply
-2. No serviço: **Disks → Add Disk** → mount path `/data`, 1 GB (plano Starter+; o free não tem disco)
-3. URL final: `https://hx-chat.onrender.com` (se o nome estiver ocupado, o Render sufixa)
-
 Registro é **público** (qualquer um cria conta) — pensado para um grupo de amigos, sem configuração. Não depende de variáveis de ambiente.
 
 Anti-abuso embutido: limite de conexões e de tentativas de login **por IP** (sobrevive à reconexão), semáforo de scrypt (flood de login não trava o servidor), cabeçalhos CSP/HSTS/nosniff/anti-clickjacking, checagem de origem no handshake e rotação de token de sessão. Métricas de `/healthz` ficam atrás de um token (`/healthz?token=hx-metrics`); sem ele, `/healthz` devolve só `{ok:true}`.
 
-**Keep-alive / anti-hibernação (Render free):** aponte um monitor externo grátis (UptimeRobot, cron-job.org) para `https://SEU-APP/healthz` a cada 5 min — evita a instância dormir e avisa quando cai.
+**Monitoramento:** aponte um monitor externo grátis (UptimeRobot, cron-job.org) para `https://SEU-APP/healthz` a cada 5 min — avisa quando o servidor cai.
 
 ## Publicar na web (túnel temporário)
 
@@ -65,7 +49,7 @@ Anti-abuso embutido: limite de conexões e de tentativas de login **por IP** (so
 npm run tunnel
 ```
 
-Gera uma URL pública `https://….trycloudflare.com` (HTTPS, mic/tela funcionam) enquanto seu PC estiver ligado com `npm start` rodando. A URL muda a cada execução do túnel. Para endereço fixo, hospede em um serviço Node (Render, Railway, Fly.io) ou crie um túnel nomeado com conta Cloudflare.
+Gera uma URL pública `https://….trycloudflare.com` (HTTPS, mic/tela funcionam) enquanto seu PC estiver ligado com `npm start` rodando. A URL muda a cada execução do túnel. Para endereço fixo, use a VPS (seção acima) ou crie um túnel nomeado com conta Cloudflare.
 
 ## Instalar como aplicativo (PWA)
 
